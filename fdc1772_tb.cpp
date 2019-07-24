@@ -1,4 +1,6 @@
 #include "Vfdc1772.h"
+#include "Vfdc1772_fdc1772.h"
+#include "Vfdc1772_floppy__S280de80.h"
 #include "verilated.h"
 #include "verilated_vcd_c.h"
 
@@ -77,61 +79,62 @@ void wait_ns(double n) {
     static int clkdiv = 0;
     if(top->clkcpu) {
       clkdiv++;
-      if(clkdiv == 2) {
-	top->clk8m_en = !top->clk8m_en;
+      if(clkdiv == 4) {
+	top->clk8m_en = 1;
 	clkdiv = 0;
-      }
+      } else
+	top->clk8m_en = 0;
     }
 
     { static int cmd_rx = 0;
-      if(top->fdc1772__DOT__cmd_rx && !cmd_rx)
-	printf("[%.3f] New command %x\n", time_ns/1000000000, top->fdc1772__DOT__cmd);
-      cmd_rx = top->fdc1772__DOT__cmd_rx;
+      if(top->v->cmd_rx && !cmd_rx)
+	printf("[%.3f] New command %x\n", time_ns/1000000000, top->v->cmd);
+      cmd_rx = top->v->cmd_rx;
     }
 
     { static int motor_on=0;
       static int rate=0;
       static double motor_on_time = 0;
       static double motor_off_time = 0;
-      if(!motor_on && top->fdc1772__DOT__motor_on) {
+      if(!motor_on && top->v->motor_on) {
 	printf("[%.3f] \"motor on\" at %.3f RPM\n", time_ns/1000000000, 
-	       300.0*top->fdc1772__DOT__floppy0__DOT__rate/250000.0);
+	       300.0*top->v->floppy0->rate/250000.0);
 	motor_on_time = time_ns;
       }
       
-      if(motor_on && !top->fdc1772__DOT__motor_on) {
+      if(motor_on && !top->v->motor_on) {
 	printf("[%.3f] \"motor off\" at %.3f RPM\n",  time_ns/1000000000, 
-	       300.0*top->fdc1772__DOT__floppy0__DOT__rate/250000.0);
+	       300.0*top->v->floppy0->rate/250000.0);
 	motor_off_time = time_ns;
       }
       
-      motor_on = top->fdc1772__DOT__motor_on;
+      motor_on = top->v->motor_on;
       
-      if((top->fdc1772__DOT__floppy0__DOT__rate == 250000)&&(rate != 250000)) {
+      if((top->v->floppy0->rate == 250000)&&(rate != 250000)) {
 	printf("[%.3f] Full RPM reached %.3fms after motor on\n",  time_ns/1000000000, 
 	       (time_ns-motor_on_time)/1000000);
       }
       
-      if((top->fdc1772__DOT__floppy0__DOT__rate == 0)&&(rate != 0)) {
+      if((top->v->floppy0->rate == 0)&&(rate != 0)) {
 	printf("[%.3f] Disk stopped %.3fms after motor off\n",  time_ns/1000000000, 
 	       (time_ns-motor_off_time)/1000000);
       }
       
-      rate = top->fdc1772__DOT__floppy0__DOT__rate;
+      rate = top->v->floppy0->rate;
       
 #if 0
       { static int step_busy = 0;
-	if(top->fdc1772__DOT__floppy0__DOT__step_busy != step_busy) {
+	if(top->v->floppy0->step_busy != step_busy) {
 	  printf("[%.3f] Step busy now %d\n",  time_ns/1000000000,
-		 top->fdc1772__DOT__floppy0__DOT__step_busy);
-	  step_busy = top->fdc1772__DOT__floppy0__DOT__step_busy;
+		 top->v->floppy0->step_busy);
+	  step_busy = top->v->floppy0->step_busy;
 	}
       }
 #endif
       
       static int ready=0;
       int top_ready = 
-	(top->fdc1772__DOT__floppy0__DOT__rate == 250000) && (top->fdc1772__DOT__floppy0__DOT__step_busy == 0);
+	(top->v->floppy0->rate == 250000) && (top->v->floppy0->step_busy == 0);
       if(top_ready != ready) {
 	printf("[%.3f] Floppy becomes %sready\n",  time_ns/1000000000, 
 	       top_ready?"":"not ");
@@ -166,34 +169,34 @@ void wait_ns(double n) {
 #endif
 
       static int busy=0;
-      if(top->fdc1772__DOT__busy != busy) {
+      if(top->v->busy != busy) {
 	printf("[%.3f] fdc becomes %sbusy%s\n",  time_ns/1000000000, 
-	       top->fdc1772__DOT__busy?"":"not ", 
-	       top->fdc1772__DOT__busy?"":". command done");
-	busy = top->fdc1772__DOT__busy;
+	       top->v->busy?"":"not ", 
+	       top->v->busy?"":". command done");
+	busy = top->v->busy;
       }
       
       static int motor_timeout_index = 0;
-      if(top->fdc1772__DOT__motor_timeout_index != motor_timeout_index) {
+      if(top->v->motor_timeout_index != motor_timeout_index) {
         printf("[%.3f] Floppy motor timeout %d\n",  time_ns/1000000000, 
-	top->fdc1772__DOT__motor_timeout_index);
+	top->v->motor_timeout_index);
       
-	motor_timeout_index = top->fdc1772__DOT__motor_timeout_index;
+	motor_timeout_index = top->v->motor_timeout_index;
       }
       
       static int track = 0;
-      if(top->fdc1772__DOT__floppy0__DOT__current_track != track) {
+      if(top->v->floppy0->current_track != track) {
 	printf("[%.3f] Track changed to %d\n",  time_ns/1000000000, 
-	       top->fdc1772__DOT__floppy0__DOT__current_track);
-	track = top->fdc1772__DOT__floppy0__DOT__current_track;
+	       top->v->floppy0->current_track);
+	track = top->v->floppy0->current_track;
       }
 
       static int motor_spin_up_sequence = 0;
-      if(top->fdc1772__DOT__motor_spin_up_sequence != motor_spin_up_sequence) {
+      if(top->v->motor_spin_up_sequence != motor_spin_up_sequence) {
  	printf("[%.3f] Motor spinup %d\n",  time_ns/1000000000, 
-	       top->fdc1772__DOT__motor_spin_up_sequence);
+	       top->v->motor_spin_up_sequence);
 
-        motor_spin_up_sequence = top->fdc1772__DOT__motor_spin_up_sequence;
+        motor_spin_up_sequence = top->v->motor_spin_up_sequence;
       }
    }
 
@@ -206,39 +209,36 @@ void wait_ns(double n) {
     if(top->clkcpu && clkdiv == 0) {
       // check for status 
       static unsigned long status = 0;
+      static bool io_rd = false;
       static long data_tx_counter = 0;
       static int data_tx_state = 0;
-      if(top->dio_status_out != status) {
-	status = top->dio_status_out;
+      if(top->v->sd_rd != io_rd) {
+	io_rd = top->v->sd_rd;
 	
-	//      printf("DIO: status changed to: %lx\n", status);
-	if((status>>24) & 1) {
-	  // printf("DIO: BUSY with commmand %lx\n", (status >> 16) & 0xff);
-	  
-	  // check for read sector command
-	  if(((status >> 16) & 0xe0) == 0x80) {
-	    // check if fifo has not yet been written to
-	    if((status>>24) & 2) {
+	printf("DIO: sd_rd changed to: %d\n", top->v->sd_rd);
+	if(top->v->sd_rd) {
 	      printf("DIO: READ SECTOR with empty fifo, starting 1k data\n");
 	      data_tx_counter = 1024;
 	      data_tx_state = 0;
-	    }
-	  }
+	      top->sd_ack = 1;
+	      top->sd_buff_addr = 0;
 	}
       }
       
       // write something into the fifo
       if(data_tx_counter) {
 	if(data_tx_state == 0) {
-	  top->dio_in = 1024 - data_tx_counter;
+	  top->sd_dout = 1024 - data_tx_counter;
 	  data_tx_state = 1;
 	} else if(data_tx_state == 1) {
-	  top->dio_in_strobe = 1;
+	  top->sd_dout_strobe = 1;
 	  data_tx_state = 2;
 	} else if(data_tx_state == 2) {
-	  top->dio_in_strobe = 0;
+	  top->sd_dout_strobe = 0;
+	  top->sd_buff_addr++;
 	  data_tx_state = 3;
 	  data_tx_counter--;
+	  if(data_tx_counter == 0) top->sd_ack = 0;
 	} else {
 	  data_tx_state++;
 	  if(data_tx_state == 10)
@@ -305,10 +305,10 @@ unsigned char cpu_read(char reg) {
 }
 
 void track_expect(int t) {
-  if((top->fdc1772__DOT__floppy0__DOT__current_track != t)||
-     (top->fdc1772__DOT__track != t)) {
+  if((top->v->floppy0->current_track != t)||
+     (top->v->track != t)) {
     printf("Unexpected track position FLOPPY %d/FDC %d, expected %d \n",
-	   top->fdc1772__DOT__floppy0__DOT__current_track, top->fdc1772__DOT__track, t);
+	   top->v->floppy0->current_track, top->v->track, t);
     exit(1);
   }
 }	   
@@ -370,18 +370,26 @@ int main(int argc, char **argv, char **env) {
   top->wb_cyc = 0;
   top->wb_stb = 0;
 
-  top->dio_in_strobe = 0;
+  top->sd_din_strobe = 0;
 
+  // Select FD0
+  top->floppy_drive = 0xe;
   top->floppy_side = 0;
-  top->floppy_reset = 1;
+  top->floppy_reset = 0;
   wait_ns(100);
   top->floppy_reset = 1;
+
+  // mount an image in FD0
+  top->img_mounted = 1;
+  top->img_size = 100000;
+  wait_ns(100);
+  top->img_mounted = 0;
 
 #if STEPTEST
   printf("============= STEP TESTS ==============\n");
 
   // start at track 10
-  top->fdc1772__DOT__floppy0__DOT__current_track = 10;
+  top->v->current_track = 10;
 
   wait_ns(100);
 
@@ -440,11 +448,11 @@ int main(int argc, char **argv, char **env) {
 #if READTEST
 
   // force disk to spin at full speed
-  top->fdc1772__DOT__floppy0__DOT__rate = 250000;
-  top->fdc1772__DOT__floppy0__DOT__current_track = 0;
-  top->fdc1772__DOT__motor_on = 1;
-  top->fdc1772__DOT__motor_spin_up_sequence = 0;
-  top->fdc1772__DOT__motor_timeout_index = 5;
+  top->v->floppy0->rate = 250000;
+  top->v->floppy0->current_track = 0;
+  top->v->motor_on = 1;
+  top->v->motor_spin_up_sequence = 0;
+  top->v->motor_timeout_index = 5;
 
   dump_enable = 1;
 
