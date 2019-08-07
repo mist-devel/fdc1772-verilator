@@ -23,29 +23,23 @@
 // - some parts are hard coded for archie floppy format (not dos)
 
 module fdc1772 (
-		input 	      clkcpu, // system cpu clock.
-		input 	      clk8m_en,
+		input            clkcpu, // system cpu clock.
+		input            clk8m_en,
 
-		// external set signals 
-		input [3:0]   floppy_drive,
-		input 	      floppy_side, 
-		input 	      floppy_motor,
-		input 	      floppy_inuse,
-		input 	      floppy_density,
-		input 	      floppy_reset,
+		// external set signals
+		input      [3:0] floppy_drive,
+		input            floppy_side, 
+		input            floppy_reset,
 
 		// interrupts
-		output 	      floppy_firq, // floppy fast irq
-		output 	      floppy_drq, // data request interrupt
+		output           floppy_firq, // floppy fast irq
+		output           floppy_drq, // data request interrupt
 
-		// "wishbone bus" the ack is externally generated currently. 
-		input 	      wb_cyc,
-		input 	      wb_stb,
-		input 	      wb_we,
-
-		input [15:2]  wb_adr, // la
-		input [7:0]   wb_dat_i, // bd
-		output reg [7:0]  wb_dat_o, // bd 
+		input      [1:0] cpu_addr,
+		input            cpu_sel,
+		input            cpu_rw,
+		input      [7:0] cpu_din,
+		output     [7:0] cpu_dout,
 
 		// place any signals that need to be passed up to the top after here.
 		input      [1:0] img_mounted, // signaling that new image has been mounted
@@ -62,7 +56,7 @@ module fdc1772 (
 		input            sd_din_strobe
 );
 
-localparam CLK = 42000000;
+localparam CLK = 32000000;
 localparam CLK_EN = 8000000;
 
 // -------------------------------------------------------------------------
@@ -75,10 +69,10 @@ reg [1:0] floppy_ready = 0;
 reg [1:0] floppy_wp = 1;
 
 wire         floppy_present = (floppy_drive == 4'b1110)?floppy_ready[0]:
-	                          (floppy_drive == 4'b1101)?floppy_ready[1]:1'b0;
+                              (floppy_drive == 4'b1101)?floppy_ready[1]:1'b0;
 
 wire floppy_write_protected = (floppy_drive == 4'b1110)?floppy_wp[0]:
-	                          (floppy_drive == 4'b1101)?floppy_wp[1]:1'b1;
+                              (floppy_drive == 4'b1101)?floppy_wp[1]:1'b1;
 
 always @(posedge clkcpu) begin
 	reg [1:0] img_mountedD;
@@ -103,9 +97,8 @@ reg irq_set;
 // floppy_reset and read of status register clears irq
 reg cpu_read_status;
 always @(posedge clkcpu)
-  cpu_read_status <= wb_stb && wb_cyc && !wb_we && 
-		     (wb_adr[3:2] == FDC_REG_CMDSTATUS);
-   
+  cpu_read_status <= cpu_sel && cpu_rw && (cpu_addr == FDC_REG_CMDSTATUS);
+
 wire irq_clr = !floppy_reset || cpu_read_status;
    
 always @(posedge clkcpu or posedge irq_clr) begin
@@ -125,7 +118,7 @@ reg drq_set;
 
 reg cpu_rw_data;
 always @(posedge clkcpu)
-  cpu_rw_data <= wb_stb && wb_cyc && (wb_adr[3:2] == FDC_REG_DATA);
+  cpu_rw_data <= cpu_sel && (cpu_addr == FDC_REG_DATA);
 
 wire drq_clr = !floppy_reset || cpu_rw_data;
 
@@ -693,17 +686,21 @@ localparam FDC_REG_DATA         = 3;
 
 // CPU register read
 always @(*) begin
-   wb_dat_o = 8'h00;
+   cpu_dout = 8'h00;
 
-   if(wb_stb && wb_cyc && !wb_we) begin
-      case(wb_adr[3:2])
-        FDC_REG_CMDSTATUS: wb_dat_o = status;
-        FDC_REG_TRACK:     wb_dat_o = track;
-        FDC_REG_SECTOR:    wb_dat_o = sector;
-        FDC_REG_DATA:      wb_dat_o = data_out;
+   if(cpu_sel && cpu_rw) begin
+      case(cpu_addr)
+        FDC_REG_CMDSTATUS: cpu_dout = status;
+        FDC_REG_TRACK:     cpu_dout = track;
+        FDC_REG_SECTOR:    cpu_dout = sector;
+        FDC_REG_DATA:      cpu_dout = data_out;
       endcase
    end
 end
+
+reg cpu_selD;
+always @(posedge clkcpu) cpu_selD <= cpu_sel;
+wire cpu_we = ~cpu_selD & cpu_sel & ~cpu_rw;
 
 // cpu register write
 reg cmd_rx /* verilator public */;
@@ -712,97 +709,94 @@ reg last_stb;
 reg data_in_strobe;
 
 always @(posedge clkcpu) begin
-   if(!floppy_reset) begin
-      // clear internal registers
-      cmd <= 8'h00;
-      track <= 8'h00;
-      sector <= 8'h00;
+	if(!floppy_reset) begin
+		// clear internal registers
+		cmd <= 8'h00;
+		track <= 8'h00;
+		sector <= 8'h00;
 
-      // reset state machines and counters
-      cmd_rx_i <= 1'b0;
-      cmd_rx <= 1'b0;
-      last_stb <= 1'b0;
-      data_in_strobe <= 0;
-   end else begin
-      data_in_strobe <= 0;
-      last_stb <= wb_stb;
+		// reset state machines and counters
+		cmd_rx_i <= 1'b0;
+		cmd_rx <= 1'b0;
+		last_stb <= 1'b0;
+		data_in_strobe <= 0;
+	end else begin
+		data_in_strobe <= 0;
 
 		// cmd_rx is delayed to make sure all signals (the cmd!) are stable when
 		// cmd_rx is evaluated
 		cmd_rx <= cmd_rx_i;
 
-      // command reception is ack'd by fdc going busy
-      if(busy)
-			cmd_rx_i <= 1'b0;
+		// command reception is ack'd by fdc going busy
+		if(busy) cmd_rx_i <= 1'b0;
 
-      // only react if stb just raised
-      if(!last_stb && wb_stb && wb_cyc && wb_we) begin
-			if(wb_adr[3:2] == FDC_REG_CMDSTATUS) begin       // command register
-            cmd <= wb_dat_i;
+		// only react if stb just raised
+		if(cpu_we) begin
+			if(cpu_addr == FDC_REG_CMDSTATUS) begin       // command register
+				cmd <= cpu_din;
 				cmd_rx_i <= 1'b1;
-	    
-            // ------------- TYPE I commands -------------
-            if(wb_dat_i[7:4] == 4'b0000) begin               // RESTORE
+				// ------------- TYPE I commands -------------
+				if(cpu_din[7:4] == 4'b0000) begin               // RESTORE
 					step_to <= 8'd0;
 					track <= 8'd0;
-            end
-            
-            if(wb_dat_i[7:4] == 4'b0001) begin               // SEEK
+				end
+
+				if(cpu_din[7:4] == 4'b0001) begin               // SEEK
 					step_to <= data_in;
 					track <= data_in;
-            end
-            
-            if(wb_dat_i[7:5] == 3'b001) begin                // STEP
+				end
+
+				if(cpu_din[7:5] == 3'b001) begin                // STEP
 					step_to <= (step_dir == 1)?(track + 8'd1):(track - 8'd1);
-					if(wb_dat_i[4]) track <= (step_dir == 1)?(track + 8'd1):(track - 8'd1);
-            end
-            
-            if(wb_dat_i[7:5] == 3'b010) begin                // STEP-IN
+					if(cpu_din[4]) track <= (step_dir == 1)?(track + 8'd1):(track - 8'd1);
+				end
+
+				if(cpu_din[7:5] == 3'b010) begin                // STEP-IN
 					step_to <= track + 8'd1;
-               step_dir <= 1'b1;
-					if(wb_dat_i[4]) track <= track + 8'd1;
-            end
-	    
-            if(wb_dat_i[7:5] == 3'b011) begin                // STEP-OUT
+					step_dir <= 1'b1;
+					if(cpu_din[4]) track <= track + 8'd1;
+				end
+
+				if(cpu_din[7:5] == 3'b011) begin                // STEP-OUT
 					step_to <= track - 8'd1;
-               step_dir <= 1'b0;
-					if(wb_dat_i[4]) track <= track - 8'd1;
-            end
-            
-            // ------------- TYPE II commands -------------
-            if(wb_dat_i[7:5] == 3'b100) begin                // read sector
-            end
+					step_dir <= 1'b0;
+					if(cpu_din[4]) track <= track - 8'd1;
+				end
 
-            if(wb_dat_i[7:5] == 3'b101) begin                // write sector
-            end
-            
-            // ------------- TYPE III commands ------------
-            if(wb_dat_i[7:4] == 4'b1100) begin               // read address
+				// ------------- TYPE II commands -------------
+				if(cpu_din[7:5] == 3'b100) begin                // read sector
 				end
-	       
-            if(wb_dat_i[7:4] == 4'b1110) begin               // read track
-				end
-            
-            if(wb_dat_i[7:4] == 4'b1111) begin               // write track
-				end
-	       
-            // ------------- TYPE IV commands -------------
-            if(wb_dat_i[7:4] == 4'b1101) begin               // force intrerupt
-            end
-         end
-	 
-         if(wb_adr[3:2] == FDC_REG_TRACK)                    // track register
-           track <= wb_dat_i;
-         
-         if(wb_adr[3:2] == FDC_REG_SECTOR)                   // sector register
-           sector <= wb_dat_i;
 
-         if(wb_adr[3:2] == FDC_REG_DATA) begin               // data register
-           data_in_strobe <= 1;
-           data_in <= wb_dat_i;
-         end
-      end
-   end
+				if(cpu_din[7:5] == 3'b101) begin                // write sector
+				end
+
+				// ------------- TYPE III commands ------------
+				if(cpu_din[7:4] == 4'b1100) begin               // read address
+				end
+
+				if(cpu_din[7:4] == 4'b1110) begin               // read track
+				end
+
+				if(cpu_din[7:4] == 4'b1111) begin               // write track
+				end
+
+				// ------------- TYPE IV commands -------------
+				if(cpu_din[7:4] == 4'b1101) begin               // force intrerupt
+				end
+			end
+
+			if(cpu_addr == FDC_REG_TRACK)                    // track register
+				track <= cpu_din;
+
+			if(cpu_addr == FDC_REG_SECTOR)                   // sector register
+				sector <= cpu_din;
+
+			if(cpu_addr == FDC_REG_DATA) begin               // data register
+				data_in_strobe <= 1;
+				data_in <= cpu_din;
+			end
+		end
+	end
 end
 
 endmodule
