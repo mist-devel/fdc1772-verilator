@@ -142,20 +142,20 @@ void wait_ns(double n) {
       }
 
       static int firq=0;
-      if(top->floppy_firq != firq) {
+      if(top->irq != firq) {
 	printf("[%.3f] IRQ %s\n",  time_ns/1000000000, 
-	       top->floppy_firq?"raised":"cleared");
+	       top->irq?"raised":"cleared");
 
-	firq = top->floppy_firq;
+	firq = top->irq;
       }
 
 #if 0
       static int drq=0;
-      if(top->floppy_drq != drq) {
+      if(top->drq != drq) {
 	printf("[%.3f] DRQ %s\n",  time_ns/1000000000, 
-	       top->floppy_drq?"raised":"cleared");
+	       top->drq?"raised":"cleared");
 
-	drq = top->floppy_drq;
+	drq = top->drq;
       }
 #endif
 
@@ -325,9 +325,9 @@ void read_sector(int track, int sector) {
   double start = time_ns;
     
   // reading the address should generate 6 drq's until a irq is generated
-  while(!top->floppy_firq) {
+  while(!top->irq) {
     wait_ns(100);
-    if(top->floppy_drq) {
+    if(top->drq) {
       int data = cpu_read(3);
       
       if(data != (i&0xff))
@@ -385,7 +385,7 @@ int main(int argc, char **argv, char **env) {
   printf("============= STEP TESTS ==============\n");
 
   // start at track 10
-  top->fdc1772->current_track = 10;
+  top->fdc1772->floppy0->current_track = 10;
 
   wait_ns(100);
 
@@ -472,9 +472,9 @@ int main(int argc, char **argv, char **env) {
     double start = time_ns;
     
     // reading the address should generate 6 drq's until a irq is generated
-    while(!top->floppy_firq) {
+    while(!top->irq) {
       wait_ns(100);
-      if(top->floppy_drq) {
+      if(top->drq) {
 	printf("@%.0fus data: %02x\n", 
 	       (time_ns - start)/1000, cpu_read(3));
 	start = time_ns;
