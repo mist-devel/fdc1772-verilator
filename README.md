@@ -1,7 +1,7 @@
 # fdc1772 verilator simulation
 
 This is a verilator environment written to test the floppy and fdc
-implementation for the Archimedes FPGA "Archie" core.
+implementation for the Archimedes FPGA "Archie" and Atari ST "MiSTery" cores.
 
 It includes a testbench for the fdc incl. a floppy model. This
 can be run by entering ```make```:
