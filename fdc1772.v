@@ -69,7 +69,7 @@ localparam SECTOR_SIZE = 11'd128 << SECTOR_SIZE_CODE;
 always @(*) begin
 	if (SECTOR_SIZE_CODE == 3)
 		// archie
-		sd_lba = { 16'd10*track[6:0] + (floppy_side ? 4'd0 : 4'd5) + sector[3:0], s_odd };
+		sd_lba = {(16'd0 + (fd_spt*track[6:0]) << fd_doubleside) + (floppy_side ? 5'd0 : fd_spt) + sector[4:0], s_odd };
 	else
 		// st
 		sd_lba = ((fd_spt*track[6:0]) << fd_doubleside) + (floppy_side ? 5'd0 : fd_spt) + sector[4:0] - 1'd1;
@@ -100,7 +100,7 @@ always @(*) begin
 	if (SECTOR_SIZE_CODE == 3) begin
 		// archie
 		image_doubleside = 1'b1;
-		image_spt = 5'd5;
+		image_spt = image_hd ? 5'd10 : 5'd5;
 		image_gap_len = 10'd220;
 	end else begin
 		// this block is valid for the .st format (or similar arrangement)
