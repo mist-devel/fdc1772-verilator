@@ -181,11 +181,11 @@ end
 reg cpu_selD;
 reg cpu_rwD;
 always @(posedge clkcpu) begin
-	cpu_rwD <= cpu_rw;
+	cpu_rwD <= cpu_sel & ~cpu_rw;
 	cpu_selD <= cpu_sel;
 end
 
-wire cpu_we = cpu_sel & cpu_rwD & ~cpu_rw;
+wire cpu_we = cpu_sel & ~cpu_rw & ~cpu_rwD;
 
 reg irq_set;
 
