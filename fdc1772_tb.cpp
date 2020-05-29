@@ -267,6 +267,7 @@ void wait_ns(double n) {
 	  cpu_write_reg = cpu_write_reg + 1;
 	else {
 	  top->cpu_sel = 0;
+	  top->cpu_rw = 1;
 	}
       }
     }
@@ -365,8 +366,6 @@ int main(int argc, char **argv, char **env) {
 
   // no cpu access
   top->cpu_sel = 0;
-
-  top->sd_din_strobe = 0;
 
   // Select FD0
   top->floppy_drive = 0xe;

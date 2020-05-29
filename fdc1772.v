@@ -19,7 +19,7 @@
 
 // TODO: 
 // - 30ms settle time after step before data can be read
-// - implement sector size 0,1
+// - implement sector size 0
 
 module fdc1772 (
 	input            clkcpu, // system cpu clock.
@@ -51,8 +51,7 @@ module fdc1772 (
 	input      [8:0] sd_buff_addr,
 	input      [7:0] sd_dout,
 	output     [7:0] sd_din,
-	input            sd_dout_strobe,
-	input            sd_din_strobe
+	input            sd_dout_strobe
 );
 
 parameter CLK = 32000000;
@@ -67,12 +66,15 @@ localparam SECTOR_SIZE = 11'd128 << SECTOR_SIZE_CODE;
 // -------------------------------------------------------------------------
 
 always @(*) begin
-	if (SECTOR_SIZE_CODE == 3)
-		// archie
-		sd_lba = {(16'd0 + (fd_spt*track[6:0]) << fd_doubleside) + (floppy_side ? 5'd0 : fd_spt) + sector[4:0], s_odd };
-	else
-		// st
-		sd_lba = ((fd_spt*track[6:0]) << fd_doubleside) + (floppy_side ? 5'd0 : fd_spt) + sector[4:0] - 1'd1;
+	case (SECTOR_SIZE_CODE)
+	// archie
+	3: sd_lba = {(16'd0 + (fd_spt*track[6:0]) << fd_doubleside) + (floppy_side ? 5'd0 : fd_spt) + sector[4:0], s_odd };
+	// st
+	2: sd_lba = ((fd_spt*track[6:0]) << fd_doubleside) + (floppy_side ? 5'd0 : fd_spt) + sector[4:0] - 1'd1;
+	// bbc micro
+	1: sd_lba = ((fd_spt*track[6:0]) + sector[4:0]) >> 1;
+	default: sd_lba = 0;
+	endcase
 end
 
 reg [1:0] floppy_ready = 0;
@@ -89,7 +91,7 @@ reg   [9:0] gap_len[2]; // gap len/sector
 reg   [1:0] doubleside;
 reg   [1:0] hd;
 
-wire [11:0] image_sectors = img_size[20:9];
+reg  [11:0] image_sectors;
 reg  [11:0] image_sps; // sectors/side
 reg   [4:0] image_spt; // sectors/track
 reg   [9:0] image_gap_len;
@@ -97,13 +99,17 @@ reg         image_doubleside;
 wire        image_hd = img_size[20];
 
 always @(*) begin
-	if (SECTOR_SIZE_CODE == 3) begin
-		// archie
+	case (SECTOR_SIZE_CODE)
+	3: begin
+		// archie, 1024 bytes/sector
+		image_sectors = img_size[21:10];
 		image_doubleside = 1'b1;
 		image_spt = image_hd ? 5'd10 : 5'd5;
 		image_gap_len = 10'd220;
-	end else begin
-		// this block is valid for the .st format (or similar arrangement)
+	end
+	2: begin
+		// this block is valid for the .st format (or similar arrangement), 512 bytes/sector
+		image_sectors = img_size[20:9];
 		image_doubleside = 1'b0;
 		image_sps = image_sectors;
 		if (image_sectors > (85*12)) begin
@@ -130,6 +136,21 @@ always @(*) begin
 			default : image_gap_len = 10'd2;
 		endcase;
 	end
+	1: begin
+		// 256 bytes/sector (BBC SSD)
+		image_sectors = img_size[19:8];
+		image_doubleside = 0;
+		image_spt = 5'd10;
+		image_gap_len = 10'd220;
+	end
+	default: begin
+		image_sectors = 0;
+		image_doubleside = 0;
+		image_spt = 0;
+		image_gap_len = 0;
+	end
+
+	endcase
 end
 
 always @(posedge clkcpu) begin
@@ -158,8 +179,13 @@ end
 // ---------------------------- IRQ/DRQ handling ---------------------------
 // -------------------------------------------------------------------------
 reg cpu_selD;
-always @(posedge clkcpu) cpu_selD <= cpu_sel;
-wire cpu_we = ~cpu_selD & cpu_sel & ~cpu_rw;
+reg cpu_rwD;
+always @(posedge clkcpu) begin
+	cpu_rwD <= cpu_rw;
+	cpu_selD <= cpu_sel;
+end
+
+wire cpu_we = cpu_sel & cpu_rwD & ~cpu_rw;
 
 reg irq_set;
 
@@ -733,19 +759,25 @@ reg data_transfer_done;
 
 // 0.5/1 kB buffer used to receive a sector as fast as possible from from the io
 // controller. The internal transfer afterwards then runs at 250000 Bit/s
-reg  [SECTOR_SIZE_CODE + 7:0] fifo_cpuptr;
+reg  [10:0] fifo_cpuptr;
+reg  [9:0] fifo_cpuptr_adj;
 wire [7:0] fifo_q;
 reg        s_odd; //odd sector
-reg  [SECTOR_SIZE_CODE + 6:0] fifo_sdptr;
+reg  [9:0] fifo_sdptr;
 
 always @(*) begin
 	if (SECTOR_SIZE_CODE == 3)
 		fifo_sdptr = { s_odd, sd_buff_addr };
 	else
-		fifo_sdptr = sd_buff_addr;
+		fifo_sdptr = { 1'b0, sd_buff_addr };
+
+	if (SECTOR_SIZE_CODE == 1)
+		fifo_cpuptr_adj = { 1'b0, sector[0], fifo_cpuptr[7:0] };
+	else
+		fifo_cpuptr_adj = fifo_cpuptr[9:0];
 end
 
-fdc1772_dpram #(8, SECTOR_SIZE_CODE + 7) fifo
+fdc1772_dpram #(8, 10) fifo
 (
 	.clock(clkcpu),
 
@@ -754,7 +786,7 @@ fdc1772_dpram #(8, SECTOR_SIZE_CODE + 7) fifo
 	.wren_a(sd_dout_strobe & sd_ack),
 	.q_a(sd_din),
 
-	.address_b(fifo_cpuptr),
+	.address_b(fifo_cpuptr_adj),
 	.data_b(data_in),
 	.wren_b(data_in_strobe),
 	.q_b(fifo_q)
@@ -827,11 +859,13 @@ always @(posedge clkcpu) begin
 	reg        data_transfer_startD;
 	reg [10:0] data_transfer_cnt;
 
+	if (data_in_strobe) data_out <= data_in;
+
 	// reset fifo read pointer on reception of a new command or 
 	// when multi-sector transfer increments the sector number
 	if(cmd_rx || sector_inc_strobe) begin
-		data_transfer_cnt <= 11'd0;
-		fifo_cpuptr <= 10'd0;
+		data_transfer_cnt <= 0;
+		fifo_cpuptr <= 0;
 	end
 
 	drq_set <= 1'b0;
