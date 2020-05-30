@@ -43,6 +43,7 @@ module fdc1772 (
 	// place any signals that need to be passed up to the top after here.
 	input      [1:0] img_mounted, // signaling that new image has been mounted
 	input      [1:0] img_wp,      // write protect
+	input            img_ds,      // double-sided image (for BBC Micro only)
 	input     [31:0] img_size,    // size of image in bytes
 	output reg[31:0] sd_lba,
 	output reg [1:0] sd_rd,
@@ -72,7 +73,7 @@ always @(*) begin
 	// st
 	2: sd_lba = ((fd_spt*track[6:0]) << fd_doubleside) + (floppy_side ? 5'd0 : fd_spt) + sector[4:0] - 1'd1;
 	// bbc micro
-	1: sd_lba = ((fd_spt*track[6:0]) + sector[4:0]) >> 1;
+	1: sd_lba = (((fd_spt*track[6:0]) << fd_doubleside) + (floppy_side ? 5'd0 : fd_spt) + sector[4:0]) >> 1;
 	default: sd_lba = 0;
 	endcase
 end
@@ -139,7 +140,7 @@ always @(*) begin
 	1: begin
 		// 256 bytes/sector (BBC SSD)
 		image_sectors = img_size[19:8];
-		image_doubleside = 0;
+		image_doubleside = img_ds;
 		image_spt = 5'd10;
 		image_gap_len = 10'd220;
 	end
