@@ -657,6 +657,7 @@ always @(posedge clkcpu) begin
 							sector_not_found <= 1'b1;
 							delay_cnt <= 24'd1000 * CLK_EN;
 						end else begin
+							RNF <= 1'b0;
 							if (fifo_cpuptr == 0) sd_card_read <= 1;
 							// we are busy until the right sector header passes under 
 							// the head and the sd-card controller indicates the sector
@@ -673,7 +674,6 @@ always @(posedge clkcpu) begin
 									busy <= 1'b0;
 									motor_timeout_index <= MOTOR_IDLE_COUNTER - 1'd1;
 									irq_set <= 1'b1; // emit irq when command done
-									RNF <= 1'b0;
 								end
 							end
 						end
