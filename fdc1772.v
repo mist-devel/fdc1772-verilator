@@ -477,11 +477,11 @@ reg track_dec_strobe;
 reg track_clear_strobe;
 
 always @(posedge clkcpu) begin
-	reg data_transfer_can_start;
 	reg [1:0] seek_state;
 	reg notready_wait;
 	reg sector_not_found;
 	reg irq_at_index;
+	reg data_transfer_state;
 
 	sector_inc_strobe <= 1'b0;
 	track_inc_strobe <= 1'b0;
@@ -497,11 +497,11 @@ always @(posedge clkcpu) begin
 		sd_card_read <= 0;
 		sd_card_write <= 0;
 		data_transfer_start <= 1'b0;
-		data_transfer_can_start <= 0;
 		seek_state <= 0;
 		notready_wait <= 1'b0;
 		sector_not_found <= 1'b0;
 		irq_at_index <= 1'b0;
+		data_transfer_state <= 1'b0;
 	end else if (clk8m_en) begin
 		sd_card_read <= 0;
 		sd_card_write <= 0;
@@ -528,6 +528,7 @@ always @(posedge clkcpu) begin
 			busy <= 1'b1;
 			notready_wait <= 1'b0;
 			sector_not_found <= 1'b0;
+			data_transfer_state <= 1'b0;
 
 			if(cmd_type_1 || cmd_type_2 || cmd_type_3) begin
 				motor_on <= 1'b1;
@@ -656,26 +657,38 @@ always @(posedge clkcpu) begin
 							// wait 5 rotations (1 sec) before setting RNF
 							sector_not_found <= 1'b1;
 							delay_cnt <= 24'd1000 * CLK_EN;
-						end else begin
+						end else if (sd_state == SD_IDLE) begin
 							RNF <= 1'b0;
-							if (fifo_cpuptr == 0) sd_card_read <= 1;
-							// we are busy until the right sector header passes under 
-							// the head and the sd-card controller indicates the sector
-							// is in the fifo
-							if(sd_card_done) data_transfer_can_start <= 1;
-							if(fd_ready && fd_sector_hdr && (fd_sector == sector) && data_transfer_can_start) begin
-								data_transfer_can_start <= 0;
-								data_transfer_start <= 1;
+
+							case (data_transfer_state)
+
+							1'b0: if (fifo_cpuptr == 0) begin
+								// SD Card phase
+								sd_card_read <= 1;
+								data_transfer_state <= 1'b1;
 							end
 
-							if(data_transfer_done) begin
-								if (cmd[4]) sector_inc_strobe <= 1'b1; // multiple sector transfer
-								else begin
-									busy <= 1'b0;
-									motor_timeout_index <= MOTOR_IDLE_COUNTER - 1'd1;
-									irq_set <= 1'b1; // emit irq when command done
+							1'b1: begin
+								// CPU phase
+								// we are busy until the right sector header passes under 
+								// the head and the sd-card controller indicates the sector
+								// is in the fifo
+								if(fd_ready && fd_sector_hdr && (fd_sector == sector)) data_transfer_start <= 1'b1;
+
+								if(data_transfer_done) begin
+									data_transfer_state <= 1'b0;
+									if (cmd[4]) sector_inc_strobe <= 1'b1; // multiple sector transfer
+									else begin
+										busy <= 1'b0;
+										motor_timeout_index <= MOTOR_IDLE_COUNTER - 1'd1;
+										irq_set <= 1'b1; // emit irq when command done
+									end
 								end
 							end
+
+							default :;
+							endcase
+
 						end
 					end
 
@@ -685,10 +698,20 @@ always @(posedge clkcpu) begin
 							// wait 5 rotations (1 sec) before setting RNF
 							sector_not_found <= 1'b1;
 							delay_cnt <= 24'd1000 * CLK_EN;
-						end else begin
-							if (fifo_cpuptr == 0) data_transfer_start <= 1'b1;
-							if (data_transfer_done) sd_card_write <= 1;
-							if (sd_card_done) begin
+						end else if (sd_state == SD_IDLE) begin
+							case (data_transfer_state)
+
+							1'b0: begin
+								// CPU phase
+								if (fifo_cpuptr == 0) data_transfer_start <= 1'b1;
+								if (data_transfer_done) begin
+									sd_card_write <= 1;
+									data_transfer_state <= 1'b1;
+								end
+
+							1'b1: begin
+								// SD Card phase
+								data_transfer_state <= 1'b0;
 								if (cmd[4]) sector_inc_strobe <= 1'b1; // multiple sector transfer
 								else begin
 									busy <= 1'b0;
@@ -697,6 +720,10 @@ always @(posedge clkcpu) begin
 									RNF <= 1'b0;
 								end
 							end
+
+							default: ;
+							endcase
+
 						end
 					end
 				end
@@ -810,7 +837,6 @@ localparam SD_WRITE = 2;
 reg [1:0] sd_state;
 reg       sd_card_write;
 reg       sd_card_read;
-reg       sd_card_done;
 
 always @(posedge clkcpu) begin
 	reg sd_ackD;
@@ -821,7 +847,6 @@ always @(posedge clkcpu) begin
 	sd_card_writeD <= sd_card_write;
 	sd_ackD <= sd_ack;
 	if (sd_ack) {sd_rd, sd_wr} <= 0;
-	if (clk8m_en) sd_card_done <= 0;
 
 	case (sd_state)
 	SD_IDLE:
@@ -841,7 +866,6 @@ always @(posedge clkcpu) begin
 	if (sd_ackD & ~sd_ack) begin
 		if (s_odd || SECTOR_SIZE_CODE != 3) begin
 			sd_state <= SD_IDLE;
-			sd_card_done <= 1; // to be on the safe side now, can be issued earlier
 		end else begin
 			s_odd <= 1;
 			sd_rd <= ~{ floppy_drive[1], floppy_drive[0] };
@@ -852,7 +876,6 @@ always @(posedge clkcpu) begin
 	if (sd_ackD & ~sd_ack) begin
 		if (s_odd || SECTOR_SIZE_CODE != 3) begin
 			sd_state <= SD_IDLE;
-			sd_card_done <= 1;
 		end else begin
 			s_odd <= 1;
 			sd_wr <= ~{ floppy_drive[1], floppy_drive[0] };
