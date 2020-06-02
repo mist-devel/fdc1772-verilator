@@ -502,6 +502,7 @@ always @(posedge clkcpu) begin
 		sector_not_found <= 1'b0;
 		irq_at_index <= 1'b0;
 		data_transfer_state <= 1'b0;
+		RNF <= 1'b0;
 	end else if (clk8m_en) begin
 		sd_card_read <= 0;
 		sd_card_write <= 0;
@@ -531,6 +532,7 @@ always @(posedge clkcpu) begin
 			data_transfer_state <= 1'b0;
 
 			if(cmd_type_1 || cmd_type_2 || cmd_type_3) begin
+				RNF <= 1'b0;
 				motor_on <= 1'b1;
 				// 'h' flag '0' -> wait for spin up
 				if (!motor_on && !cmd[3]) motor_spin_up_sequence <= 6;   // wait for 6 full rotations
@@ -542,7 +544,7 @@ always @(posedge clkcpu) begin
 				if(cmd[3]) irq_set <= 1'b1;
 				if(cmd[3:2] == 2'b01) irq_at_index <= 1'b1;
 			end
-		 end
+		end
 
 		// execute command if motor is not supposed to be running or
 		// wait for motor spinup to finish
@@ -550,6 +552,18 @@ always @(posedge clkcpu) begin
 
 			// ------------------------ TYPE I -------------------------
 			if(cmd_type_1) begin
+				if(!floppy_present) begin
+					// no image selected -> send irq after 6 ms
+					if (!notready_wait) begin
+						delay_cnt <= 16'd6*CLK_EN;
+						notready_wait <= 1'b1;
+					end else begin
+						RNF <= 1'b1;
+						busy <= 1'b0;
+						motor_timeout_index <= MOTOR_IDLE_COUNTER - 1'd1;
+						irq_set <= 1'b1; // emit irq when command done
+					end
+				end else
 				// evaluate command
 				case (seek_state)
 				0: begin
@@ -613,7 +627,6 @@ always @(posedge clkcpu) begin
 				2: begin
 					if (cmd[2]) begin
 						delay_cnt <= 16'd3*CLK_EN; // TODO: implement verify, now just delay one more step
-						RNF <= 1'b0;
 					end
 					seek_state <= 3;
 				   end
@@ -658,8 +671,6 @@ always @(posedge clkcpu) begin
 							sector_not_found <= 1'b1;
 							delay_cnt <= 24'd1000 * CLK_EN;
 						end else if (sd_state == SD_IDLE) begin
-							RNF <= 1'b0;
-
 							case (data_transfer_state)
 
 							1'b0: if (fifo_cpuptr == 0) begin
@@ -708,6 +719,7 @@ always @(posedge clkcpu) begin
 									sd_card_write <= 1;
 									data_transfer_state <= 1'b1;
 								end
+							end
 
 							1'b1: begin
 								// SD Card phase
@@ -717,7 +729,6 @@ always @(posedge clkcpu) begin
 									busy <= 1'b0;
 									motor_timeout_index <= MOTOR_IDLE_COUNTER - 1'd1;
 									irq_set <= 1'b1; // emit irq when command done
-									RNF <= 1'b0;
 								end
 							end
 
@@ -733,6 +744,7 @@ always @(posedge clkcpu) begin
 			if(cmd_type_3) begin
 				if(!floppy_present) begin
 					// no image selected -> send irq immediately
+					RNF <= 1'b1;
 					busy <= 1'b0; 
 					motor_timeout_index <= MOTOR_IDLE_COUNTER - 1'd1;
 					irq_set <= 1'b1; // emit irq when command done
@@ -959,10 +971,10 @@ end
 wire [7:0] status = { motor_on, 
 		      floppy_write_protected,              // wrprot
 		      cmd_type_1?motor_spin_up_done:1'b0,  // data mark
-		      !floppy_present | RNF,               // record not found
+		      RNF,                                 // seek error/record not found
 		      1'b0,                                // crc error
-		      cmd_type_1?fd_track0:data_lost,
-		      cmd_type_1?~fd_index:drq,
+		      cmd_type_1?fd_track0:data_lost,      // track0/data lost
+		      cmd_type_1?~fd_index:drq,            // index mark/drq
 		      busy } /* synthesis keep */;
 
 reg [7:0] track /* verilator public */;
