@@ -543,6 +543,8 @@ always @(posedge clkcpu) begin
 				busy <= 1'b0;
 				if(cmd[3]) irq_set <= 1'b1;
 				if(cmd[3:2] == 2'b01) irq_at_index <= 1'b1;
+				// From Hatari: Starting a Force Int command when idle should set the motor bit and clear the spinup bit (verified on STF)
+				if (!busy) motor_on <= 1'b1;
 			end
 		end
 
