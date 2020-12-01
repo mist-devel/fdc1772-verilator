@@ -728,7 +728,7 @@ always @(posedge clkcpu) begin
 								end
 							2'b10: begin
 								// CPU phase
-								if (fifo_cpuptr == 0) data_transfer_start <= 1'b1;
+								if (fifo_cpuptr == 0 && fd_ready && fd_sector_hdr && (fd_sector == sector)) data_transfer_start <= 1'b1;
 								if (data_transfer_done) begin
 									sd_card_write <= 1;
 									data_transfer_state <= 2'b11;
@@ -913,16 +913,22 @@ always @(posedge clkcpu) begin
 end
 
 // -------------------- CPU data read/write -----------------------
+reg data_in_strobe;
+reg data_in_valid;
 
 always @(posedge clkcpu) begin
 	reg        data_transfer_startD;
 	reg [10:0] data_transfer_cnt;
 
-	if (data_in_strobe) data_out <= data_in;
+	if (cpu_we && cpu_addr == FDC_REG_DATA) begin
+		data_out <= data_in;
+		data_in_valid <= 1;
+	end
 
 	// reset fifo read pointer on reception of a new command or 
 	// when multi-sector transfer increments the sector number
 	if(cmd_rx || sector_inc_strobe) begin
+		data_in_valid <= 0;
 		data_transfer_cnt <= 0;
 		fifo_cpuptr <= 0;
 	end
@@ -940,9 +946,13 @@ always @(posedge clkcpu) begin
 		// read/write sector has SECTOR_SIZE data bytes
 		if(cmd[7:6] == 2'b10)
 			data_transfer_cnt <= SECTOR_SIZE + 1'd1;
+
+		// write sector asserts drq earlier to fill up the data register in time
+		if(cmd[7:5] == 3'b101) drq_set <= !data_in_valid;
 	end
 
-	// write sector data arrived from CPU
+	// advance fifo pointer when the write sector data consumed
+	data_in_strobe <= 1'b0;
 	if(cmd[7:5] == 3'b101 && data_in_strobe) fifo_cpuptr <= fifo_cpuptr + 1'd1;
 
 	if(fd_dclk_en) begin
@@ -950,13 +960,13 @@ always @(posedge clkcpu) begin
 			if(data_transfer_cnt != 1) begin
 				data_lost <= 1'b0;
 				if (drq) data_lost <= 1'b1;
-				drq_set <= 1'b1;
+				if (cmd[7:5] == 3'b100 || data_transfer_cnt != 2) drq_set <= 1'b1;
 
 				// read_address
 				if(cmd[7:4] == 4'b1100) begin
 					case(data_transfer_cnt)
 						7: data_out <= fd_track;
-						6: data_out <= { 7'b0000000, fd1771 ? 1'b0 : floppy_side };
+						6: data_out <= { 7'b0000000, fd1771 ^ floppy_side };
 						5: data_out <= fd_sector;
 						4: data_out <= SECTOR_SIZE_CODE; // TODO: sec size 0=128, 1=256, 2=512, 3=1024
 						3: data_out <= 8'ha5;
@@ -965,12 +975,16 @@ always @(posedge clkcpu) begin
 				end
 
 				// read sector
-				if(cmd[7:5] == 3'b100) begin
-					if(fifo_cpuptr != SECTOR_SIZE) begin
-						data_out <= fifo_q;
-						fifo_cpuptr <= fifo_cpuptr + 1'd1;
-					end
+				if(cmd[7:5] == 3'b100 && fifo_cpuptr != SECTOR_SIZE) begin
+					data_out <= fifo_q;
+					fifo_cpuptr <= fifo_cpuptr + 1'd1;
 				end
+				// write sector
+				if(cmd[7:5] == 3'b101 && fifo_cpuptr != SECTOR_SIZE) begin
+					data_in_strobe <= 1;
+					data_in_valid <= 0;
+				end
+
 			end
 
 			// count down and stop after last byte
@@ -1029,7 +1043,6 @@ end
 // cpu register write
 reg cmd_rx /* verilator public */;
 reg cmd_rx_i;
-reg data_in_strobe;
 
 always @(posedge clkcpu) begin
 	if(!floppy_reset) begin
@@ -1041,9 +1054,7 @@ always @(posedge clkcpu) begin
 		// reset state machines and counters
 		cmd_rx_i <= 1'b0;
 		cmd_rx <= 1'b0;
-		data_in_strobe <= 0;
 	end else begin
-		data_in_strobe <= 0;
 
 		// cmd_rx is delayed to make sure all signals (the cmd!) are stable when
 		// cmd_rx is evaluated
@@ -1105,7 +1116,6 @@ always @(posedge clkcpu) begin
 				sector <= cpu_din;
 
 			if(cpu_addr == FDC_REG_DATA) begin               // data register
-				data_in_strobe <= 1;
 				data_in <= cpu_din;
 			end
 		end
