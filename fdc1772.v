@@ -960,7 +960,8 @@ always @(posedge clkcpu) begin
 			if(data_transfer_cnt != 1) begin
 				data_lost <= 1'b0;
 				if (drq) data_lost <= 1'b1;
-				if (cmd[7:5] == 3'b100 || data_transfer_cnt != 2) drq_set <= 1'b1;
+				// raise drq, except when the last byte is already taken from the CPU for write
+				if (cmd[7:5] != 3'b101 || data_transfer_cnt != 2) drq_set <= 1'b1;
 
 				// read_address
 				if(cmd[7:4] == 4'b1100) begin
