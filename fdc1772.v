@@ -24,6 +24,7 @@
 module fdc1772 (
 	input            clkcpu, // system cpu clock.
 	input            clk8m_en,
+	input            fd1771, // 1771 compatibility
 
 	// external set signals
 	input      [3:0] floppy_drive,
@@ -141,11 +142,18 @@ always @(*) begin
 		endcase;
 	end
 	1: begin
-		// 256 bytes/sector single density (BBC SSD)
+		// 256 bytes/sector single density (BBC SSD/DSD, TI99/4A)
 		fm = 1;
 		image_sectors = img_size[19:8];
 		image_doubleside = img_ds;
-		image_spt = 5'd10;
+		if (img_ds)
+			image_sps = image_sectors >> 1'b1;
+		else
+			image_sps = image_sectors;
+		case (image_sps)
+			360: image_spt = 9; // TI99/4A
+			default: image_spt = 10; // BBC Micro
+		endcase
 		image_gap_len = 10'd50;
 	end
 	default: begin
@@ -948,7 +956,7 @@ always @(posedge clkcpu) begin
 				if(cmd[7:4] == 4'b1100) begin
 					case(data_transfer_cnt)
 						7: data_out <= fd_track;
-						6: data_out <= { 7'b0000000, floppy_side };
+						6: data_out <= { 7'b0000000, fd1771 ? 1'b0 : floppy_side };
 						5: data_out <= fd_sector;
 						4: data_out <= SECTOR_SIZE_CODE; // TODO: sec size 0=128, 1=256, 2=512, 3=1024
 						3: data_out <= 8'ha5;
@@ -974,7 +982,7 @@ always @(posedge clkcpu) begin
 end
 
 // the status byte
-wire [7:0] status = { motor_on, 
+wire [7:0] status = { fd1771 ? !floppy_ready : motor_on,
 		      floppy_write_protected,              // wrprot
 		      cmd_type_1?motor_spin_up_done:1'b0,  // data mark
 		      RNF,                                 // seek error/record not found
