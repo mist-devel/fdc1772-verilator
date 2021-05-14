@@ -570,7 +570,6 @@ always @(posedge clkcpu) begin
 					end else begin
 						RNF <= 1'b1;
 						busy <= 1'b0;
-						motor_timeout_index <= MOTOR_IDLE_COUNTER - 1'd1;
 						irq_set <= 1'b1; // emit irq when command done
 					end
 				end else
@@ -644,7 +643,6 @@ always @(posedge clkcpu) begin
 				// finish
 				3: begin
 					busy <= 1'b0;
-					motor_timeout_index <= MOTOR_IDLE_COUNTER - 1'd1;
 					irq_set <= 1'b1; // emit irq when command done
 					seek_state <= 0;
 				   end
@@ -661,12 +659,10 @@ always @(posedge clkcpu) begin
 					end else begin
 						RNF <= 1'b1;
 						busy <= 1'b0;
-						motor_timeout_index <= MOTOR_IDLE_COUNTER - 1'd1;
 						irq_set <= 1'b1; // emit irq when command done
 					end
 				end else if (sector_not_found) begin
 					busy <= 1'b0;
-					motor_timeout_index <= MOTOR_IDLE_COUNTER - 1'd1;
 					irq_set <= 1'b1; // emit irq when command done
 					RNF <= 1'b1;
 				end else if (cmd[2] && !notready_wait) begin
@@ -701,7 +697,6 @@ always @(posedge clkcpu) begin
 									if (cmd[4]) sector_inc_strobe <= 1'b1; // multiple sector transfer
 									else begin
 										busy <= 1'b0;
-										motor_timeout_index <= MOTOR_IDLE_COUNTER - 1'd1;
 										irq_set <= 1'b1; // emit irq when command done
 									end
 								end
@@ -741,7 +736,6 @@ always @(posedge clkcpu) begin
 								if (cmd[4]) sector_inc_strobe <= 1'b1; // multiple sector transfer
 								else begin
 									busy <= 1'b0;
-									motor_timeout_index <= MOTOR_IDLE_COUNTER - 1'd1;
 									irq_set <= 1'b1; // emit irq when command done
 								end
 							end
@@ -760,20 +754,17 @@ always @(posedge clkcpu) begin
 					// no image selected -> send irq immediately
 					RNF <= 1'b1;
 					busy <= 1'b0; 
-					motor_timeout_index <= MOTOR_IDLE_COUNTER - 1'd1;
 					irq_set <= 1'b1; // emit irq when command done
 				end else begin
 					// read track TODO: fake
 					if(cmd[7:4] == 4'b1110) begin
 						busy <= 1'b0;
-						motor_timeout_index <= MOTOR_IDLE_COUNTER - 1'd1;
 						irq_set <= 1'b1; // emit irq when command done
 					end
 
 					// write track TODO: fake
 					if(cmd[7:4] == 4'b1111) begin
 						busy <= 1'b0;
-						motor_timeout_index <= MOTOR_IDLE_COUNTER - 1'd1;
 						irq_set <= 1'b1; // emit irq when command done
 					end
 
@@ -785,7 +776,6 @@ always @(posedge clkcpu) begin
 
 						if(data_transfer_done) begin
 							busy <= 1'b0;
-							motor_timeout_index <= MOTOR_IDLE_COUNTER - 1'd1;
 							irq_set <= 1'b1; // emit irq when command done
 						end
 					end
@@ -799,17 +789,21 @@ always @(posedge clkcpu) begin
 			irq_at_index <= 1'b0;
 			if (irq_at_index) irq_set <= 1'b1;
 
-			// led motor timeout run once fdc is not busy anymore
-			if(!busy) begin
+			// let motor timeout run once fdc is not busy anymore
+			if(!busy && motor_spin_up_done) begin
 				if(motor_timeout_index != 0)
 					motor_timeout_index <= motor_timeout_index - 4'd1;
-				else
+				else if(motor_on)
+					motor_timeout_index <= MOTOR_IDLE_COUNTER;
+
+				if(motor_timeout_index == 1)
 					motor_on <= 1'b0;
 			end
 
 			if(motor_spin_up_sequence != 0)
 				motor_spin_up_sequence <= motor_spin_up_sequence - 4'd1;
 		end
+		if(busy) motor_timeout_index <= 0;
 	end
 end
 
