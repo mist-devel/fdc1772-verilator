@@ -24,12 +24,14 @@
 module fdc1772 (
 	input            clkcpu, // system cpu clock.
 	input            clk8m_en,
-	input            fd1771, // 1771 compatibility
 
 	// external set signals
-	input      [3:0] floppy_drive,
+	input      [W:0] floppy_drive,
 	input            floppy_side, 
 	input            floppy_reset,
+	output           floppy_step,
+	input            floppy_motor,
+	output           floppy_ready,
 
 	// interrupts
 	output reg       irq,
@@ -42,13 +44,13 @@ module fdc1772 (
 	output reg [7:0] cpu_dout,
 
 	// place any signals that need to be passed up to the top after here.
-	input      [1:0] img_mounted, // signaling that new image has been mounted
-	input      [1:0] img_wp,      // write protect
+	input      [W:0] img_mounted, // signaling that new image has been mounted
+	input      [W:0] img_wp,      // write protect
 	input            img_ds,      // double-sided image (for BBC Micro only)
 	input     [31:0] img_size,    // size of image in bytes
 	output reg[31:0] sd_lba,
-	output reg [1:0] sd_rd,
-	output reg [1:0] sd_wr,
+	output reg [W:0] sd_rd,
+	output reg [W:0] sd_wr,
 	input            sd_ack,
 	input      [8:0] sd_buff_addr,
 	input      [7:0] sd_dout,
@@ -56,12 +58,17 @@ module fdc1772 (
 	input            sd_dout_strobe
 );
 
-parameter CLK = 32000000;
-parameter CLK_EN = 16'd8000; // in kHz
+parameter CLK_EN           = 16'd8000; // in kHz
+parameter FD_NUM           = 2;    // number of supported floppies
+parameter MODEL            = 2;    // 0 - wd1770, 1 - fd1771, 2 - wd1772, 3 = wd1773/fd1793
 parameter SECTOR_SIZE_CODE = 2'd3; // sec size 0=128, 1=256, 2=512, 3=1024
-parameter SECTOR_BASE = 1'b0; // number of first sector on track (archie 0, dos 1)
+parameter SECTOR_BASE      = 1'b0; // number of first sector on track (archie 0, dos 1)
+parameter EXT_MOTOR        = 1'b0; // != 0 if motor is controlled externally by floppy_motor
+parameter INVERT_HEAD_RA   = 1'b0; // != 0 - invert head in READ_ADDRESS reply
 
 localparam SECTOR_SIZE = 11'd128 << SECTOR_SIZE_CODE;
+localparam W    = FD_NUM - 1;
+localparam WIDX = $clog2(FD_NUM);
 
 // -------------------------------------------------------------------------
 // --------------------- IO controller image handling ----------------------
@@ -79,20 +86,13 @@ always @(*) begin
 	endcase
 end
 
-reg [1:0] floppy_ready = 0;
-
-wire         floppy_present = (floppy_drive == 4'b1110)?floppy_ready[0]:
-                              (floppy_drive == 4'b1101)?floppy_ready[1]:1'b0;
-
-wire floppy_write_protected = (floppy_drive == 4'b1110)?img_wp[0]:
-                              (floppy_drive == 4'b1101)?img_wp[1]:1'b1;
-
-reg  [10:0] sector_len[2];
-reg   [4:0] spt[2];     // sectors/track
-reg   [9:0] gap_len[2]; // gap len/sector
-reg   [1:0] doubleside;
-reg   [1:0] hd;
-reg         fm;
+reg  [10:0] fdn_sector_len[FD_NUM];
+reg   [4:0] fdn_spt[FD_NUM];     // sectors/track
+reg   [9:0] fdn_gap_len[FD_NUM]; // gap len/sector
+reg         fdn_doubleside[FD_NUM];
+reg         fdn_hd[FD_NUM];
+reg         fdn_fm[FD_NUM];
+reg         fdn_present[FD_NUM];
 
 reg  [11:0] image_sectors;
 reg  [11:0] image_sps; // sectors/side
@@ -100,12 +100,13 @@ reg   [4:0] image_spt; // sectors/track
 reg   [9:0] image_gap_len;
 reg         image_doubleside;
 wire        image_hd = img_size[20];
+reg         image_fm;
 
 always @(*) begin
 	case (SECTOR_SIZE_CODE)
 	3: begin
 		// archie, 1024 bytes/sector
-		fm = 0;
+		image_fm = 0;
 		image_sectors = img_size[21:10];
 		image_doubleside = 1'b1;
 		image_spt = image_hd ? 5'd10 : 5'd5;
@@ -113,7 +114,7 @@ always @(*) begin
 	end
 	2: begin
 		// this block is valid for the .st format (or similar arrangement), 512 bytes/sector
-		fm = 0;
+		image_fm = 0;
 		image_sectors = img_size[20:9];
 		image_doubleside = 1'b0;
 		image_sps = image_sectors;
@@ -143,7 +144,7 @@ always @(*) begin
 	end
 	1: begin
 		// 256 bytes/sector single density (BBC SSD/DSD, TI99/4A)
-		fm = 1;
+		image_fm = 1;
 		image_sectors = img_size[19:8];
 		image_doubleside = img_ds;
 		if (img_ds)
@@ -157,7 +158,7 @@ always @(*) begin
 		image_gap_len = 10'd50;
 	end
 	default: begin
-		fm = 0;
+		image_fm = 0;
 		image_sectors = 0;
 		image_doubleside = 0;
 		image_spt = 0;
@@ -168,24 +169,20 @@ always @(*) begin
 end
 
 always @(posedge clkcpu) begin
-	reg [1:0] img_mountedD;
-
+	reg [3:0] img_mountedD;
+	reg [2:0] i;
 	img_mountedD <= img_mounted;
-	if (~img_mountedD[0] && img_mounted[0]) begin
-		floppy_ready[0] <= |img_size;
-		sector_len[0] <= SECTOR_SIZE;
-		spt[0] <= image_spt;
-		gap_len[0] <= image_gap_len;
-		doubleside[0] <= image_doubleside;
-		hd[0] <= image_hd;
-	end
-	if (~img_mountedD[1] && img_mounted[1]) begin
-		floppy_ready[1] <= |img_size;
-		sector_len[1] <= SECTOR_SIZE;
-		spt[1] <= image_spt;
-		gap_len[1] <= image_gap_len;
-		doubleside[1] <= image_doubleside;
-		hd[1] <= image_hd;
+	
+	for(i = 0; i < FD_NUM; i = i+1'd1) begin
+		if (~img_mountedD[i] && img_mounted[i]) begin
+			fdn_present[i] <= |img_size;
+			fdn_sector_len[i] <= SECTOR_SIZE;
+			fdn_spt[i] <= image_spt;
+			fdn_gap_len[i] <= image_gap_len;
+			fdn_doubleside[i] <= image_doubleside;
+			fdn_hd[i] <= image_hd;
+			fdn_fm[i] <= image_fm;
+		end
 	end
 end
 
@@ -232,208 +229,76 @@ end
 // -------------------- virtual floppy drive mechanics ---------------------
 // -------------------------------------------------------------------------
 
-// -------------------------------------------------------------------------
-// ------------------------------- floppy 0 --------------------------------
-// -------------------------------------------------------------------------
-wire fd0_index;
-wire fd0_ready;
-wire [6:0] fd0_track;
-wire [4:0] fd0_sector;
-wire fd0_sector_hdr;
-wire fd0_sector_data;
-wire fd0_dclk;
+wire       fdn_index[FD_NUM];
+wire       fdn_ready[FD_NUM];
+wire [6:0] fdn_track[FD_NUM];
+wire [4:0] fdn_sector[FD_NUM];
+wire       fdn_sector_hdr[FD_NUM];
+wire       fdn_sector_data[FD_NUM];
+wire       fdn_dclk[FD_NUM];
 
-floppy #(.SYS_CLK(CLK)) floppy0 (
-	.clk         ( clkcpu          ),
+generate
+	genvar i;
+	
+	for(i=0; i < FD_NUM; i = i+1) begin :fdd
 
-	// control signals into floppy
-	.select      (!floppy_drive[0] ),
-	.motor_on    ( motor_on        ),
-	.step_in     ( step_in         ),
-	.step_out    ( step_out        ),
+		floppy #(.CLK_EN(CLK_EN)) floppy
+		(
+			.clk         ( clkcpu             ),
+			.clk8m_en    ( clk8m_en           ),
 
-	// physical parameters
-	.sector_len  ( sector_len[0]   ),
-	.spt         ( spt[0]          ),
-	.sector_gap_len ( gap_len[0]   ),
-	.sector_base ( SECTOR_BASE     ),
-	.hd          ( hd[0]           ),
-	.fm          ( fm              ),
+			// control signals into floppy
+			.select      ( fd_any && fdn == i ),
+			.motor_on    ( fd_motor           ),
+			.step_in     ( step_in            ),
+			.step_out    ( step_out           ),
 
-	// status signals generated by floppy
-	.dclk_en     ( fd0_dclk        ),
-	.track       ( fd0_track       ),
-	.sector      ( fd0_sector      ),
-	.sector_hdr  ( fd0_sector_hdr  ),
-	.sector_data ( fd0_sector_data ),
-	.ready       ( fd0_ready       ),
-	.index       ( fd0_index       )
-);
+			// physical parameters
+			.sector_len  ( fdn_sector_len[i]  ),
+			.spt         ( fdn_spt[i]         ),
+			.sector_gap_len ( fdn_gap_len[i]  ),
+			.sector_base ( SECTOR_BASE[0]     ),
+			.hd          ( fdn_hd[i]          ),
+			.fm          ( fdn_fm[i]          ),
 
-// -------------------------------------------------------------------------
-// ------------------------------- floppy 1 --------------------------------
-// -------------------------------------------------------------------------
-wire fd1_index;
-wire fd1_ready;
-wire [6:0] fd1_track;
-wire [4:0] fd1_sector;
-wire fd1_sector_hdr;
-wire fd1_sector_data;
-wire fd1_dclk;
-
-floppy #(.SYS_CLK(CLK)) floppy1 (
-	.clk         ( clkcpu          ),
-
-	// control signals into floppy
-	.select      (!floppy_drive[1] ),
-	.motor_on    ( motor_on        ),
-	.step_in     ( step_in         ),
-	.step_out    ( step_out        ),
-
-	// physical parameters
-	.sector_len  ( sector_len[1]   ),
-	.spt         ( spt[1]          ),
-	.sector_gap_len ( gap_len[1]   ),
-	.sector_base ( SECTOR_BASE     ),
-	.hd          ( hd[1]           ),
-	.fm          ( fm              ),
-
-	// status signals generated by floppy
-	.dclk_en     ( fd1_dclk        ),
-	.track       ( fd1_track       ),
-	.sector      ( fd1_sector      ),
-	.sector_hdr  ( fd1_sector_hdr  ),
-	.sector_data ( fd1_sector_data ),
-	.ready       ( fd1_ready       ),
-	.index       ( fd1_index       )
-);
-
-// -------------------------------------------------------------------------
-// ------------------------------- floppy 2 --------------------------------
-// -------------------------------------------------------------------------
-wire fd2_index;
-wire fd2_ready;
-wire [6:0] fd2_track;
-wire [4:0] fd2_sector;
-wire fd2_sector_hdr;
-wire fd2_sector_data;
-wire fd2_dclk;
-
-floppy #(.SYS_CLK(CLK)) floppy2 (
-	.clk         ( clkcpu          ),
-
-	// control signals into floppy
-	.select      (!floppy_drive[2] ),
-	.motor_on    ( motor_on        ),
-	.step_in     ( step_in         ),
-	.step_out    ( step_out        ),
-
-	// physical parameters
-	.sector_len  (                 ),
-	.spt         (                 ),
-	.sector_gap_len (              ),
-	.sector_base ( SECTOR_BASE     ),
-	.hd          (                 ),
-	.fm          ( fm              ),
-
-	// status signals generated by floppy
-	.dclk_en     ( fd2_dclk        ),
-	.track       ( fd2_track       ),
-	.sector      ( fd2_sector      ),
-	.sector_hdr  ( fd2_sector_hdr  ),
-	.sector_data ( fd2_sector_data ),
-	.ready       ( fd2_ready       ),
-	.index       ( fd2_index       )
-);
-
-// -------------------------------------------------------------------------
-// ------------------------------- floppy 3 --------------------------------
-// -------------------------------------------------------------------------
-wire fd3_index;
-wire fd3_ready;
-wire [6:0] fd3_track;
-wire [4:0] fd3_sector;
-wire fd3_sector_hdr;
-wire fd3_sector_data;
-wire fd3_dclk;
-
-floppy #(.SYS_CLK(CLK)) floppy3 (
-	.clk         ( clkcpu          ),
-
-	// control signals into floppy
-	.select      (!floppy_drive[3] ),
-	.motor_on    ( motor_on        ),
-	.step_in     ( step_in         ),
-	.step_out    ( step_out        ),
-
-	// physical parameters
-	.sector_len  (                 ),
-	.spt         (                 ),
-	.sector_gap_len (              ),
-	.sector_base ( SECTOR_BASE     ),
-	.hd          (                 ),
-	.fm          ( fm              ),
-
-	// status signals generated by floppy
-	.dclk_en     ( fd3_dclk        ),
-	.track       ( fd3_track       ),
-	.sector      ( fd3_sector      ),
-	.sector_hdr  ( fd3_sector_hdr  ),
-	.sector_data ( fd3_sector_data ),
-	.ready       ( fd3_ready       ),
-	.index       ( fd3_index       )
-);
+			// status signals generated by floppy
+			.dclk_en     ( fdn_dclk[i]        ),
+			.track       ( fdn_track[i]       ),
+			.sector      ( fdn_sector[i]      ),
+			.sector_hdr  ( fdn_sector_hdr[i]  ),
+			.sector_data ( fdn_sector_data[i] ),
+			.ready       ( fdn_ready[i]       ),
+			.index       ( fdn_index[i]       )
+		);
+	end
+endgenerate
 
 // -------------------------------------------------------------------------
 // ----------------------------- floppy demux ------------------------------
 // -------------------------------------------------------------------------
 
-wire fd_index =        (!floppy_drive[0])?fd0_index:
-                       (!floppy_drive[1])?fd1_index:
-                       (!floppy_drive[2])?fd2_index:
-                       (!floppy_drive[3])?fd3_index:
-                       1'b0;
+reg [WIDX:0] fdn;
+always begin
+	integer i;
+	
+	fdn = 0;
+	for(i = FD_NUM-1; i >= 0; i = i - 1) if(!floppy_drive[i]) fdn = i[WIDX:0];
+end
 
-wire fd_ready =        (!floppy_drive[0])?fd0_ready:
-                       (!floppy_drive[1])?fd1_ready:
-                       (!floppy_drive[2])?fd2_ready:
-                       (!floppy_drive[3])?fd3_ready:
-                       1'b0;
+wire       fd_any         = ~&floppy_drive;
 
-wire [6:0] fd_track =  (!floppy_drive[0])?fd0_track:
-                       (!floppy_drive[1])?fd1_track:
-                       (!floppy_drive[2])?fd2_track:
-                       (!floppy_drive[3])?fd3_track:
-                       7'd0;
+wire       fd_index       = fd_any ? fdn_index[fdn]       : 1'b0;
+wire       fd_ready       = fd_any ? fdn_ready[fdn]       : 1'b0;
+wire [6:0] fd_track       = fd_any ? fdn_track[fdn]       : 7'd0;
+wire [4:0] fd_sector      = fd_any ? fdn_sector[fdn]      : 5'd0;
+wire       fd_sector_hdr  = fd_any ? fdn_sector_hdr[fdn]  : 1'b0;
+//wire     fd_sector_data = fd_any ? fdn_sector_data[fdn] : 1'b0;
+wire       fd_dclk_en     = fd_any ? fdn_dclk[fdn]        : 1'b0;
+wire       fd_present     = fd_any ? fdn_present[fdn]     : 1'b0;
+wire       fd_writeprot   = fd_any ? img_wp[fdn]          : 1'b1;
 
-wire [4:0] fd_sector = (!floppy_drive[0])?fd0_sector:
-                       (!floppy_drive[1])?fd1_sector:
-                       (!floppy_drive[2])?fd2_sector:
-                       (!floppy_drive[3])?fd3_sector:
-                       4'd0;
-
-wire fd_sector_hdr =   (!floppy_drive[0])?fd0_sector_hdr:
-                       (!floppy_drive[1])?fd1_sector_hdr:
-                       (!floppy_drive[2])?fd2_sector_hdr:
-                       (!floppy_drive[3])?fd3_sector_hdr:
-                       1'b0;
-
-wire fd_sector_data =  (!floppy_drive[0])?fd0_sector_data:
-                       (!floppy_drive[1])?fd1_sector_data:
-                       (!floppy_drive[2])?fd2_sector_data:
-                       (!floppy_drive[3])?fd3_sector_data:
-                       1'b0;
-
-wire fd_dclk_en =      (!floppy_drive[0])?fd0_dclk:
-                       (!floppy_drive[1])?fd1_dclk:
-                       (!floppy_drive[2])?fd2_dclk:
-                       (!floppy_drive[3])?fd3_dclk:
-                       1'b0;
-
-wire fd_doubleside =   (!floppy_drive[0])?doubleside[0]:doubleside[1];
-wire [4:0]  fd_spt =   (!floppy_drive[0])?spt[0]:spt[1];
-
-wire fd_track0 = (fd_track == 0);
+wire       fd_doubleside  = fdn_doubleside[fdn];
+wire [4:0] fd_spt         = fdn_spt[fdn];
 
 // -------------------------------------------------------------------------
 // ----------------------- internal state machines -------------------------
@@ -453,9 +318,13 @@ reg busy /* verilator public */;
 reg step_in, step_out;
 reg [3:0] motor_spin_up_sequence /* verilator public */;
 
+wire fd_motor = EXT_MOTOR ? floppy_motor : motor_on;
+
 // consider spin up done either if the motor is not supposed to spin at all or
 // if it's supposed to run and has left the spin up sequence
-wire motor_spin_up_done = (!motor_on) || (motor_on && (motor_spin_up_sequence == 0));
+wire motor_spin_up_done = (motor_spin_up_sequence == 0);
+assign floppy_ready = fd_ready && fd_present;
+
 
 // ---------------------------- step handling ------------------------------
 
@@ -465,17 +334,23 @@ reg [15:0] step_pulse_cnt;
 
 // the step rate is only valid for command type I
 wire [15:0] step_rate_clk = 
-           (cmd[1:0]==2'b00)?(16'd6*CLK_EN-1'd1):    //  6ms
-           (cmd[1:0]==2'b01)?(16'd12*CLK_EN-1'd1):   // 12ms
-           (cmd[1:0]==2'b10)?(16'd2*CLK_EN-1'd1):    //  2ms
-           (16'd3*CLK_EN-1'd1);                      //  3ms
+           (cmd[1:0]==2'b00)               ? (16'd6 *CLK_EN-1'd1):   //  6ms
+           (cmd[1:0]==2'b01)               ? (16'd12*CLK_EN-1'd1):   // 12ms
+           (MODEL == 2 && cmd[1:0]==2'b10) ? (16'd2 *CLK_EN-1'd1):   //  2ms
+           (cmd[1:0]==2'b10)               ? (16'd20*CLK_EN-1'd1):   // 20ms
+           (MODEL == 2)                    ? (16'd3 *CLK_EN-1'd1):   //  3ms
+                                             (16'd30*CLK_EN-1'd1);   // 30ms
 
 reg [15:0] step_rate_cnt;
 reg [23:0] delay_cnt;
 
+assign floppy_step = step_in | step_out;
+
 // flag indicating that a "step" is in progress
 wire step_busy = (step_rate_cnt != 0);
 wire delaying = (delay_cnt != 0);
+
+wire fd_track0 = (fd_track == 0);
 
 reg [7:0] step_to;
 reg RNF;
@@ -490,6 +365,7 @@ always @(posedge clkcpu) begin
 	reg sector_not_found;
 	reg irq_at_index;
 	reg [1:0] data_transfer_state;
+	reg wait_for_motor;
 
 	sector_inc_strobe <= 1'b0;
 	track_inc_strobe <= 1'b0;
@@ -538,12 +414,15 @@ always @(posedge clkcpu) begin
 			notready_wait <= 1'b0;
 			sector_not_found <= 1'b0;
 			data_transfer_state <= 2'b00;
+			wait_for_motor <= 1'b0;
 
 			if(cmd_type_1 || cmd_type_2 || cmd_type_3) begin
 				RNF <= 1'b0;
-				motor_on <= 1'b1;
 				// 'h' flag '0' -> wait for spin up
-				if (!motor_on && !cmd[3]) motor_spin_up_sequence <= 6;   // wait for 6 full rotations
+				if (!cmd[3]) begin
+					motor_on <= 1'b1;       // start the motor and
+					wait_for_motor <= 1'b1; // wait for 6 full rotations
+				end
 			end
 
 			// handle "forced interrupt"
@@ -558,11 +437,11 @@ always @(posedge clkcpu) begin
 
 		// execute command if motor is not supposed to be running or
 		// wait for motor spinup to finish
-		if(busy && motor_spin_up_done && !step_busy && !delaying) begin
+		if(busy && (motor_spin_up_done || !wait_for_motor) && !step_busy && !delaying) begin
 
 			// ------------------------ TYPE I -------------------------
 			if(cmd_type_1) begin
-				if(!floppy_present) begin
+				if(!fd_present) begin
 					// no image selected -> send irq after 6 ms
 					if (!notready_wait) begin
 						delay_cnt <= 16'd6*CLK_EN;
@@ -651,7 +530,7 @@ always @(posedge clkcpu) begin
 
 			// ------------------------ TYPE II -------------------------
 			if(cmd_type_2) begin
-				if(!floppy_present) begin
+				if(!fd_present) begin
 					// no image selected -> send irq after 6 ms
 					if (!notready_wait) begin
 						delay_cnt <= 16'd6*CLK_EN;
@@ -672,7 +551,7 @@ always @(posedge clkcpu) begin
 					// read sector
 				end else begin
 					if(cmd[7:5] == 3'b100) begin
-						if ((sector - SECTOR_BASE) >= fd_spt) begin
+						if ((sector - SECTOR_BASE[0]) >= fd_spt) begin
 							// wait 5 rotations (1 sec) before setting RNF
 							sector_not_found <= 1'b1;
 							delay_cnt <= 24'd1000 * CLK_EN;
@@ -710,7 +589,7 @@ always @(posedge clkcpu) begin
 
 					// write sector
 					if(cmd[7:5] == 3'b101) begin
-						if ((sector - SECTOR_BASE) >= fd_spt) begin
+						if ((sector - SECTOR_BASE[0]) >= fd_spt) begin
 							// wait 5 rotations (1 sec) before setting RNF
 							sector_not_found <= 1'b1;
 							delay_cnt <= 24'd1000 * CLK_EN;
@@ -750,7 +629,7 @@ always @(posedge clkcpu) begin
 
 			// ------------------------ TYPE III -------------------------
 			if(cmd_type_3) begin
-				if(!floppy_present) begin
+				if(!fd_present) begin
 					// no image selected -> send irq immediately
 					RNF <= 1'b1;
 					busy <= 1'b0; 
@@ -790,7 +669,7 @@ always @(posedge clkcpu) begin
 			if (irq_at_index) irq_set <= 1'b1;
 
 			// let motor timeout run once fdc is not busy anymore
-			if(!busy && motor_spin_up_done) begin
+			if(!busy && motor_on && motor_spin_up_done) begin
 				if(motor_timeout_index != 0)
 					motor_timeout_index <= motor_timeout_index - 4'd1;
 				else if(motor_on)
@@ -804,6 +683,7 @@ always @(posedge clkcpu) begin
 				motor_spin_up_sequence <= motor_spin_up_sequence - 4'd1;
 		end
 		if(busy) motor_timeout_index <= 0;
+		if(!fd_motor) motor_spin_up_sequence <= 6;
 	end
 end
 
@@ -873,11 +753,11 @@ always @(posedge clkcpu) begin
 	begin
 		s_odd <= 1'b0;
 		if (~sd_card_readD & sd_card_read) begin
-			sd_rd <= ~{ floppy_drive[1], floppy_drive[0] };
+			sd_rd[fdn] <= 1;
 			sd_state <= SD_READ;
 		end
 		else if (~sd_card_writeD & sd_card_write) begin
-			sd_wr <= ~{ floppy_drive[1], floppy_drive[0] };
+			sd_wr[fdn] <= 1;
 			sd_state <= SD_WRITE;
 		end
 	end
@@ -888,7 +768,7 @@ always @(posedge clkcpu) begin
 			sd_state <= SD_IDLE;
 		end else begin
 			s_odd <= 1;
-			sd_rd <= ~{ floppy_drive[1], floppy_drive[0] };
+			sd_rd[fdn] <= 1;
 		end
 	end
 
@@ -898,7 +778,7 @@ always @(posedge clkcpu) begin
 			sd_state <= SD_IDLE;
 		end else begin
 			s_odd <= 1;
-			sd_wr <= ~{ floppy_drive[1], floppy_drive[0] };
+			sd_wr[fdn] <= 1;
 		end
 	end
 
@@ -910,9 +790,31 @@ end
 reg data_in_strobe;
 reg data_in_valid;
 
+function [15:0] crc;
+	input [15:0] curcrc;
+	input  [7:0] val;
+	reg    [3:0] i;
+	begin
+		crc = {curcrc[15:8] ^ val, 8'h00};
+		for (i = 0; i < 8; i=i+1'd1) begin
+			if(crc[15]) begin
+				crc = crc << 1;
+				crc = crc ^ 16'h1021;
+			end
+			else crc = crc << 1;
+		end
+		crc = {curcrc[7:0] ^ crc[15:8], crc[7:0]};
+	end
+endfunction
+
 always @(posedge clkcpu) begin
 	reg        data_transfer_startD;
 	reg [10:0] data_transfer_cnt;
+	reg [15:0] crcval;
+	reg        crc_en;
+
+	crc_en <= 0;
+	if(crc_en) crcval <= crc(crcval, data_out);
 
 	if (cpu_we && cpu_addr == FDC_REG_DATA) begin
 		data_out <= data_in;
@@ -934,8 +836,10 @@ always @(posedge clkcpu) begin
 	if(~data_transfer_startD & data_transfer_start) begin
 
 		// read_address command has 6 data bytes
-		if(cmd[7:4] == 4'b1100)
+		if(cmd[7:4] == 4'b1100) begin
+			crcval <= 16'hB230;
 			data_transfer_cnt <= 11'd6+11'd1;
+		end
 
 		// read/write sector has SECTOR_SIZE data bytes
 		if(cmd[7:6] == 2'b10)
@@ -960,12 +864,12 @@ always @(posedge clkcpu) begin
 				// read_address
 				if(cmd[7:4] == 4'b1100) begin
 					case(data_transfer_cnt)
-						7: data_out <= fd_track;
-						6: data_out <= { 7'b0000000, fd1771 ^ floppy_side };
-						5: data_out <= fd_sector;
-						4: data_out <= SECTOR_SIZE_CODE; // TODO: sec size 0=128, 1=256, 2=512, 3=1024
-						3: data_out <= 8'ha5;
-						2: data_out <= 8'h5a;
+						7: begin data_out <= fd_track; crc_en <= 1; end
+						6: begin data_out <= { 7'b0000000, (INVERT_HEAD_RA != 0) ^ floppy_side }; crc_en <= 1; end
+						5: begin data_out <= fd_sector; crc_en <= 1; end
+						4: begin data_out <= SECTOR_SIZE_CODE[1:0]; crc_en <= 1; end // TODO: sec size 0=128, 1=256, 2=512, 3=1024
+						3: data_out <= crcval[15:8];
+						2: data_out <= crcval[7:0];
 					endcase // case (data_read_cnt)
 				end
 
@@ -991,8 +895,8 @@ always @(posedge clkcpu) begin
 end
 
 // the status byte
-wire [7:0] status = { fd1771 ? !floppy_ready : motor_on,
-		      floppy_write_protected,              // wrprot
+wire [7:0] status = { (MODEL == 1 || MODEL == 3) ? !floppy_ready : motor_on,
+		      fd_writeprot,                        // wrprot
 		      cmd_type_1?motor_spin_up_done:1'b0,  // data mark
 		      RNF,                                 // seek error/record not found
 		      1'b0,                                // crc error
