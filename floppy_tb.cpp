@@ -1,9 +1,10 @@
 #include "Vfloppy.h"
+#include "Vfloppy_floppy.h"
 #include "verilated.h"
 #include "verilated_vcd_c.h"
 
-#define SPINTEST 0   // test disk spinning up and down
-#define STEPTEST 1   // test head stepping
+#define SPINTEST 1   // test disk spinning up and down
+#define STEPTEST 0   // test head stepping
 
 #if SPINTEST
 #define DUMP 10
@@ -104,29 +105,29 @@ void wait_ns(double n) {
       static double motor_off_time = 0;
       if(!motor_on && top->motor_on) {
 	printf("motor on at %.3f RPM\n", 
-	       300.0*top->floppy__DOT__rate/250000.0);
+	       300.0*top->floppy->rate/250000.0);
 	motor_on_time = time_ns;
       }
 
       if(motor_on && !top->motor_on) {
 	printf("motor off at %.3f RPM\n", 
-	       300.0*top->floppy__DOT__rate/250000.0);
+	       300.0*top->floppy->rate/250000.0);
 	motor_off_time = time_ns;
       }
 
       motor_on = top->motor_on;
 
-      if((top->floppy__DOT__rate == 250000)&&(rate != 250000)) {
+      if((top->floppy->rate == 250000)&&(rate != 250000)) {
 	printf("Full RPM reached %.3fms after motor on\n", 
 	       (time_ns-motor_on_time)/1000000);
       }
 
-      if((top->floppy__DOT__rate == 0)&&(rate != 0)) {
+      if((top->floppy->rate == 0)&&(rate != 0)) {
 	printf("Disk stopped %.3fms after motor off\n", 
 	       (time_ns-motor_off_time)/1000000);
       }
 
-      rate = top->floppy__DOT__rate;
+      rate = top->floppy->rate;
     }
 
     // things supposed to happen on rising clock edge
@@ -173,6 +174,7 @@ int main(int argc, char **argv, char **env) {
   top->step_in = 0;
   top->step_out = 0;
   top->select = 0;
+  top->clk8m_en = 1;
 
 #if SPINTEST
   dump_enable = 1;
