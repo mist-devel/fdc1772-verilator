@@ -169,8 +169,8 @@ always @(*) begin
 end
 
 always @(posedge clkcpu) begin
-	reg [3:0] img_mountedD;
-	reg [2:0] i;
+	reg [W:0] img_mountedD;
+	integer i;
 	img_mountedD <= img_mounted;
 	
 	for(i = 0; i < FD_NUM; i = i+1'd1) begin
@@ -891,7 +891,7 @@ end
 
 // the status byte
 wire [7:0] status = { (MODEL == 1 || MODEL == 3) ? !floppy_ready : motor_on,
-		      fd_writeprot,                        // wrprot
+		      (cmd[7:5] == 3'b101 || cmd[7:4] == 4'b1111 || cmd_type_1) && fd_writeprot, // wrprot (only for write!)
 		      cmd_type_1?motor_spin_up_done:1'b0,  // data mark
 		      RNF,                                 // seek error/record not found
 		      1'b0,                                // crc error
