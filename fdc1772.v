@@ -721,7 +721,7 @@ always @(*) begin
 		fifo_sdptr = { 1'b0, sd_buff_addr };
 
 	if (sector_size_code == 1)
-		fifo_cpuptr_adj = { 1'b0, (fd_spt[0] & track[0]) ^ sector[0], fifo_cpuptr[7:0] };
+		fifo_cpuptr_adj = { 1'b0, (fd_spt[0] & (track[0] ^ !floppy_side)) ^ sector[0], fifo_cpuptr[7:0] };
 	else
 		fifo_cpuptr_adj = fifo_cpuptr[9:0];
 end
