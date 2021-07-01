@@ -1,6 +1,6 @@
 #include "Vfdc1772.h"
 #include "Vfdc1772_fdc1772.h"
-#include "Vfdc1772_floppy__Cz1.h"
+#include "Vfdc1772__Syms.h"
 #include "verilated.h"
 #include "verilated_vcd_c.h"
 
