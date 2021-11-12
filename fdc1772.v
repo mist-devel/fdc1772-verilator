@@ -17,10 +17,6 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //
 
-// TODO: 
-// - 30ms settle time after step before data can be read
-// - implement sector size 0
-
 module fdc1772 (
 	input            clkcpu, // system cpu clock.
 	input            clk8m_en,
@@ -80,19 +76,21 @@ localparam WIDX = $clog2(FD_NUM);
 // -------------------------------------------------------------------------
 
 reg  [10:0] fdn_sector_len[FD_NUM];
-reg   [4:0] fdn_spt[FD_NUM];     // sectors/track
+reg   [5:0] fdn_spt[FD_NUM];     // sectors/track
 reg   [9:0] fdn_gap_len[FD_NUM]; // gap len/sector
 reg         fdn_doubleside[FD_NUM];
 reg         fdn_hd[FD_NUM];
+reg         fdn_ed[FD_NUM];
 reg         fdn_fm[FD_NUM];
 reg         fdn_present[FD_NUM];
 
-reg  [11:0] image_sectors;
-reg  [11:0] image_sps; // sectors/side
-reg   [4:0] image_spt; // sectors/track
+reg  [12:0] image_sectors;
+reg  [12:0] image_sps; // sectors/side
+reg   [5:0] image_spt; // sectors/track
 reg   [9:0] image_gap_len;
 reg         image_doubleside;
-wire        image_hd = img_size[20];
+wire        image_hd = img_size[20]; // >1MB
+wire        image_ed = img_size[21]; // >2MB
 reg         image_fm;
 
 reg   [1:0] sector_size_code; // sec size 0=128, 1=256, 2=512, 3=1024
@@ -105,12 +103,12 @@ always @(*) begin
 		// archie, 1024 bytes/sector
 		sector_size_code = 2'd3;
 		sector_base = 0;
-		sd_lba = {(16'd0 + (fd_spt*track[6:0]) << fd_doubleside) + (floppy_side ? 5'd0 : fd_spt) + sector[4:0], s_odd };
+		sd_lba = {(16'd0 + (fd_spt*track[6:0]) << fd_doubleside) + (floppy_side ? 5'd0 : fd_spt) + sector[5:0], s_odd };
 
 		image_fm = 0;
-		image_sectors = img_size[21:10];
+		image_sectors = img_size[22:10];
 		image_doubleside = 1'b1;
-		image_spt = image_hd ? 5'd10 : 5'd5;
+		image_spt = image_hd ? 6'd10 : 6'd5;
 		image_gap_len = 10'd220;
 
 	end
@@ -118,33 +116,35 @@ always @(*) begin
 		// this block is valid for the .st format (or similar arrangement), 512 bytes/sector
 		sector_size_code = 2'd2;
 		sector_base = 1;
-		sd_lba = ((fd_spt*track[6:0]) << fd_doubleside) + (floppy_side ? 5'd0 : fd_spt) + sector[4:0] - 1'd1;
+		sd_lba = ((fd_spt*track[6:0]) << fd_doubleside) + (floppy_side ? 6'd0 : fd_spt) + sector[5:0] - 1'd1;
 
 		image_fm = 0;
-		image_sectors = img_size[20:9];
+		image_sectors = img_size[21:9];
 		image_doubleside = 1'b0;
 		image_sps = image_sectors;
 		if (image_sectors > (85*12)) begin
 			image_doubleside = 1'b1;
 			image_sps = image_sectors >> 1'b1;
 		end
-		if (image_hd) image_sps = image_sps >> 1'b1;
+		if (image_ed) image_sps = image_sps >> 2'd2; else
+		if (image_hd) image_sps = image_sps >> 1'd1;
 
 		// spt : 9-12, tracks: 79-85
 		case (image_sps)
-			711,720,729,738,747,756,765   : image_spt = 5'd9;
-			790,800,810,820,830,840,850   : image_spt = 5'd10;
-			948,960,972,984,996,1008,1020 : image_spt = 5'd12;
-			default : image_spt = 5'd11;
+			711,720,729,738,747,756,765   : image_spt = 6'd9;
+			790,800,810,820,830,840,850   : image_spt = 6'd10;
+			948,960,972,984,996,1008,1020 : image_spt = 6'd12;
+			default : image_spt = 6'd11;
 		endcase;
 
-		if (image_hd) image_spt = image_spt << 1'b1;
+		if (image_ed) image_spt = image_spt << 2'd2; else
+		if (image_hd) image_spt = image_spt << 2'd1;
 
 		// SECTOR_GAP_LEN = BPT/SPT - (SECTOR_LEN + SECTOR_HDR_LEN) = 6250/SPT - (512+6)
 		case (image_spt)
-			5'd9, 5'd18: image_gap_len = 10'd176;
-			5'd10,5'd20: image_gap_len = 10'd107;
-			5'd11,5'd22: image_gap_len = 10'd50;
+			6'd9, 6'd18, 6'd36: image_gap_len = 10'd176;
+			6'd10,6'd20, 6'd40: image_gap_len = 10'd107;
+			6'd11,6'd22, 6'd44: image_gap_len = 10'd50;
 			default : image_gap_len = 10'd2;
 		endcase;
 	end
@@ -153,10 +153,10 @@ always @(*) begin
 		sector_size_code = 2'd1;
 		sector_base = 0;
 		if (IMG_TYPE == IMG_BBC) begin
-			sd_lba = (((fd_spt*track[6:0]) << fd_doubleside) + (floppy_side ? 5'd0 : fd_spt) + sector[4:0]) >> 1;
+			sd_lba = (((fd_spt*track[6:0]) << fd_doubleside) + (floppy_side ? 5'd0 : fd_spt) + sector[5:0]) >> 1;
 			image_spt = 10;
 		end else begin
-			sd_lba = (fd_spt*(floppy_side ? track[5:0] : 79-track[5:0]) + sector[4:0]) >> 1;
+			sd_lba = (fd_spt*(floppy_side ? track[5:0] : 79-track[5:0]) + sector[5:0]) >> 1;
 			image_spt = 9;
 		end
 
@@ -198,6 +198,7 @@ always @(posedge clkcpu) begin
 			fdn_gap_len[i] <= image_gap_len;
 			fdn_doubleside[i] <= image_doubleside;
 			fdn_hd[i] <= image_hd;
+			fdn_ed[i] <= image_ed;
 			fdn_fm[i] <= image_fm;
 		end
 	end
@@ -249,7 +250,7 @@ end
 wire       fdn_index[FD_NUM];
 wire       fdn_ready[FD_NUM];
 wire [6:0] fdn_track[FD_NUM];
-wire [4:0] fdn_sector[FD_NUM];
+wire [5:0] fdn_sector[FD_NUM];
 wire       fdn_sector_hdr[FD_NUM];
 wire       fdn_sector_data[FD_NUM];
 wire       fdn_dclk[FD_NUM];
@@ -276,6 +277,7 @@ generate
 			.sector_gap_len ( fdn_gap_len[i]  ),
 			.sector_base ( sector_base        ),
 			.hd          ( fdn_hd[i]          ),
+			.ed          ( fdn_ed[i]          ),
 			.fm          ( fdn_fm[i]          ),
 
 			// status signals generated by floppy
@@ -307,7 +309,7 @@ wire       fd_any         = ~&floppy_drive;
 wire       fd_index       = fd_any ? fdn_index[fdn]       : 1'b0;
 wire       fd_ready       = fd_any ? fdn_ready[fdn]       : 1'b0;
 wire [6:0] fd_track       = fd_any ? fdn_track[fdn]       : 7'd0;
-wire [4:0] fd_sector      = fd_any ? fdn_sector[fdn]      : 5'd0;
+wire [5:0] fd_sector      = fd_any ? fdn_sector[fdn]      : 5'd0;
 wire       fd_sector_hdr  = fd_any ? fdn_sector_hdr[fdn]  : 1'b0;
 //wire     fd_sector_data = fd_any ? fdn_sector_data[fdn] : 1'b0;
 wire       fd_dclk_en     = fd_any ? fdn_dclk[fdn]        : 1'b0;
@@ -315,7 +317,7 @@ wire       fd_present     = fd_any ? fdn_present[fdn]     : 1'b0;
 wire       fd_writeprot   = fd_any ? img_wp[fdn]          : 1'b1;
 
 wire       fd_doubleside  = fdn_doubleside[fdn];
-wire [4:0] fd_spt         = fdn_spt[fdn];
+wire [5:0] fd_spt         = fdn_spt[fdn];
 
 assign floppy_ready = fd_ready && fd_present;
 
