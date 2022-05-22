@@ -272,6 +272,7 @@ generate
 			.step_out    ( step_out           ),
 
 			// physical parameters
+			.inserted    ( fdn_present[i]     ),
 			.sector_len  ( fdn_sector_len[i]  ),
 			.spt         ( fdn_spt[i]         ),
 			.sector_gap_len ( fdn_gap_len[i]  ),
