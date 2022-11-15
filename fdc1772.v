@@ -40,6 +40,7 @@ module fdc1772 (
 	output reg [7:0] cpu_dout,
 
 	// place any signals that need to be passed up to the top after here.
+	input      [2:0] img_type,
 	input      [W:0] img_mounted, // signaling that new image has been mounted
 	input      [W:0] img_wp,      // write protect
 	input            img_ds,      // double-sided image (for BBC Micro only)
@@ -65,8 +66,8 @@ localparam IMG_ARCHIE      = 0;
 localparam IMG_ST          = 1;
 localparam IMG_BBC         = 2; // SSD, DSD formats
 localparam IMG_TI99        = 3; // V9T9 format
-
-parameter  IMG_TYPE        = IMG_ARCHIE;
+localparam IMG_BETA        = 4; // Beta Disk Interface (with TR-DOS)
+localparam IMG_PLUSD_IMG   = 5; // PlusD, non-track interleaved
 
 localparam W    = FD_NUM - 1;
 localparam WIDX = $clog2(FD_NUM);
@@ -75,7 +76,6 @@ localparam WIDX = $clog2(FD_NUM);
 // --------------------- IO controller image handling ----------------------
 // -------------------------------------------------------------------------
 
-reg  [10:0] fdn_sector_len[FD_NUM];
 reg   [5:0] fdn_spt[FD_NUM];     // sectors/track
 reg   [9:0] fdn_gap_len[FD_NUM]; // gap len/sector
 reg         fdn_doubleside[FD_NUM];
@@ -83,6 +83,9 @@ reg         fdn_hd[FD_NUM];
 reg         fdn_ed[FD_NUM];
 reg         fdn_fm[FD_NUM];
 reg         fdn_present[FD_NUM];
+reg   [1:0] fdn_sector_size_code[FD_NUM]; // sec size 0=128, 1=256, 2=512, 3=1024
+reg         fdn_sector_base[FD_NUM];
+reg   [2:0] fdn_type[FD_NUM];
 
 reg  [12:0] image_sectors;
 reg  [12:0] image_sps; // sectors/side
@@ -92,31 +95,26 @@ reg         image_doubleside;
 wire        image_hd = img_size[20]; // >1MB
 wire        image_ed = img_size[21]; // >2MB
 reg         image_fm;
-
-reg   [1:0] sector_size_code; // sec size 0=128, 1=256, 2=512, 3=1024
-reg  [10:0] sector_size;
-reg         sector_base; // number of first sector on track (archie 0, dos 1)
+reg   [1:0] image_sector_size_code; // sec size 0=128, 1=256, 2=512, 3=1024
+reg         image_sector_base; // number of first sector on track (archie 0, dos 1)
 
 always @(*) begin
-	case (IMG_TYPE)
+	image_sps = 0;
+	case (img_type)
 	IMG_ARCHIE: begin
 		// archie, 1024 bytes/sector
-		sector_size_code = 2'd3;
-		sector_base = 0;
-		sd_lba = {(16'd0 + (fd_spt*track[6:0]) << fd_doubleside) + (floppy_side ? 5'd0 : fd_spt) + sector[5:0], s_odd };
-
+		image_sector_size_code = 2'd3;
+		image_sector_base = 0;
 		image_fm = 0;
 		image_sectors = img_size[22:10];
 		image_doubleside = 1'b1;
 		image_spt = image_hd ? 6'd10 : 6'd5;
 		image_gap_len = 10'd220;
-
 	end
-	IMG_ST: begin
+	IMG_ST, IMG_PLUSD_IMG: begin
 		// this block is valid for the .st format (or similar arrangement), 512 bytes/sector
-		sector_size_code = 2'd2;
-		sector_base = 1;
-		sd_lba = ((fd_spt*track[6:0]) << fd_doubleside) + (floppy_side ? 6'd0 : fd_spt) + sector[5:0] - 1'd1;
+		image_sector_size_code = 2'd2;
+		image_sector_base = 1;
 
 		image_fm = 0;
 		image_sectors = img_size[21:9];
@@ -148,31 +146,28 @@ always @(*) begin
 			default : image_gap_len = 10'd2;
 		endcase;
 	end
-	IMG_BBC, IMG_TI99: begin
-		// 256 bytes/sector single density (BBC SSD/DSD, TI99/4A)
-		sector_size_code = 2'd1;
-		sector_base = 0;
-		if (IMG_TYPE == IMG_BBC) begin
-			sd_lba = (((fd_spt*track[6:0]) << fd_doubleside) + (floppy_side ? 5'd0 : fd_spt) + sector[5:0]) >> 1;
+	IMG_BBC, IMG_TI99, IMG_BETA: begin
+		// 256 bytes/sector single density (BBC SSD/DSD, TI99/4A, BETA Disk Interface)
+		image_sector_size_code = 2'd1;
+		image_sector_base = 0;
+		image_fm = 1;
+		if (img_type == IMG_BBC) begin
 			image_spt = 10;
-		end else begin
-			sd_lba = (fd_spt*(floppy_side ? track[5:0] : 79-track[5:0]) + sector[5:0]) >> 1;
+		end else if (img_type == IMG_TI99) begin
 			image_spt = 9;
+		end else begin
+			image_sector_base = 1;
+			image_spt = 16;
+			image_fm = 0;
 		end
 
-		image_fm = 1;
 		image_sectors = img_size[19:8];
 		image_doubleside = img_ds;
-		if (img_ds)
-			image_sps = image_sectors >> 1'b1;
-		else
-			image_sps = image_sectors;
 		image_gap_len = 10'd50;
 	end
 	default: begin
-		sector_size_code = 2'd0;
-		sector_base = 0;
-		sd_lba = 0;
+		image_sector_size_code = 2'd0;
+		image_sector_base = 0;
 		image_fm = 0;
 		image_sectors = 0;
 		image_doubleside = 0;
@@ -181,25 +176,37 @@ always @(*) begin
 	end
 
 	endcase
+end
 
-	sector_size = 11'd128 << sector_size_code;
+always @(*) begin
+	case (fd_type)
+	IMG_ARCHIE:    sd_lba = {(16'd0 + (fd_spt*track[6:0]) << fd_doubleside) + (floppy_side ? 5'd0 : fd_spt) + sector[5:0], s_odd };
+	IMG_ST:        sd_lba = ((fd_spt*track[6:0]) << fd_doubleside) + (floppy_side ? 6'd0 : fd_spt) + sector[5:0] - 1'd1;
+	IMG_PLUSD_IMG: sd_lba = (floppy_side ? 16'd0 : 16'd800) + fd_spt*track[6:0] + sector[5:0] - 1'd1;
+	IMG_BBC:       sd_lba = (((fd_spt*track[6:0]) << fd_doubleside) + (floppy_side ? 5'd0 : fd_spt) + sector[5:0]) >> 1;
+	IMG_TI99:      sd_lba = (fd_spt*(floppy_side ? track[5:0] : 79-track[5:0]) + sector[5:0]) >> 1;
+	IMG_BETA:      sd_lba = (((fd_spt*track[6:0]) << fd_doubleside) + (floppy_side ? 5'd0 : fd_spt) + sector[5:0] - 1'd1) >> 1;
+	default:       sd_lba = 0;
+	endcase
 end
 
 always @(posedge clkcpu) begin
 	reg [W:0] img_mountedD;
 	integer i;
 	img_mountedD <= img_mounted;
-	
+
 	for(i = 0; i < FD_NUM; i = i+1'd1) begin
 		if (~img_mountedD[i] && img_mounted[i]) begin
 			fdn_present[i] <= |img_size;
-			fdn_sector_len[i] <= sector_size;
+			fdn_sector_size_code[i] <= image_sector_size_code;
 			fdn_spt[i] <= image_spt;
 			fdn_gap_len[i] <= image_gap_len;
 			fdn_doubleside[i] <= image_doubleside;
 			fdn_hd[i] <= image_hd;
 			fdn_ed[i] <= image_ed;
 			fdn_fm[i] <= image_fm;
+			fdn_sector_base[i] <= image_sector_base;
+			fdn_type[i] <= img_type;
 		end
 	end
 end
@@ -273,10 +280,10 @@ generate
 
 			// physical parameters
 			.inserted    ( fdn_present[i]     ),
-			.sector_len  ( fdn_sector_len[i]  ),
+			.sector_size_code ( fdn_sector_size_code[i]  ),
 			.spt         ( fdn_spt[i]         ),
 			.sector_gap_len ( fdn_gap_len[i]  ),
-			.sector_base ( sector_base        ),
+			.sector_base ( fdn_sector_base[i] ),
 			.hd          ( fdn_hd[i]          ),
 			.ed          ( fdn_ed[i]          ),
 			.fm          ( fdn_fm[i]          ),
@@ -305,20 +312,24 @@ always begin
 	for(i = FD_NUM-1; i >= 0; i = i - 1) if(!floppy_drive[i]) fdn = i[WIDX:0];
 end
 
-wire       fd_any         = ~&floppy_drive;
+wire        fd_any         = ~&floppy_drive;
 
-wire       fd_index       = fd_any ? fdn_index[fdn]       : 1'b0;
-wire       fd_ready       = fd_any ? fdn_ready[fdn]       : 1'b0;
-wire [6:0] fd_track       = fd_any ? fdn_track[fdn]       : 7'd0;
-wire [5:0] fd_sector      = fd_any ? fdn_sector[fdn]      : 5'd0;
-wire       fd_sector_hdr  = fd_any ? fdn_sector_hdr[fdn]  : 1'b0;
-//wire     fd_sector_data = fd_any ? fdn_sector_data[fdn] : 1'b0;
-wire       fd_dclk_en     = fd_any ? fdn_dclk[fdn]        : 1'b0;
-wire       fd_present     = fd_any ? fdn_present[fdn]     : 1'b0;
-wire       fd_writeprot   = fd_any ? img_wp[fdn]          : 1'b1;
+wire        fd_index       = fd_any ? fdn_index[fdn]       : 1'b0;
+wire        fd_ready       = fd_any ? fdn_ready[fdn]       : 1'b0;
+wire  [6:0] fd_track       = fd_any ? fdn_track[fdn]       : 7'd0;
+wire  [5:0] fd_sector      = fd_any ? fdn_sector[fdn]      : 5'd0;
+wire        fd_sector_hdr  = fd_any ? fdn_sector_hdr[fdn]  : 1'b0;
+//wire      fd_sector_data = fd_any ? fdn_sector_data[fdn] : 1'b0;
+wire        fd_dclk_en     = fd_any ? fdn_dclk[fdn]        : 1'b0;
+wire        fd_present     = fd_any ? fdn_present[fdn]     : 1'b0;
+wire        fd_writeprot   = fd_any ? img_wp[fdn]          : 1'b1;
 
-wire       fd_doubleside  = fdn_doubleside[fdn];
-wire [5:0] fd_spt         = fdn_spt[fdn];
+wire        fd_doubleside  = fdn_doubleside[fdn];
+wire  [5:0] fd_spt         = fdn_spt[fdn];
+wire  [1:0] fd_sector_size_code = fdn_sector_size_code[fdn];
+wire [10:0] fd_sector_size = 11'd128 << fdn_sector_size_code[fdn];
+wire        fd_sector_base = fdn_sector_base[fdn];
+wire  [2:0] fd_type        = fdn_type[fdn];
 
 assign floppy_ready = fd_ready && fd_present;
 
@@ -567,7 +578,7 @@ always @(posedge clkcpu) begin
 					// read sector
 				end else begin
 					if(cmd[7:5] == 3'b100) begin
-						if ((sector - sector_base) >= fd_spt) begin
+						if ((sector - fd_sector_base) >= fd_spt) begin
 							// wait 5 rotations (1 sec) before setting RNF
 							sector_not_found <= 1'b1;
 							delay_cnt <= 24'd1000 * CLK_EN;
@@ -605,7 +616,7 @@ always @(posedge clkcpu) begin
 
 					// write sector
 					if(cmd[7:5] == 3'b101) begin
-						if ((sector - sector_base) >= fd_spt) begin
+						if ((sector - fd_sector_base) >= fd_spt) begin
 							// wait 5 rotations (1 sec) before setting RNF
 							sector_not_found <= 1'b1;
 							delay_cnt <= 24'd1000 * CLK_EN;
@@ -613,7 +624,7 @@ always @(posedge clkcpu) begin
 							case (data_transfer_state)
 							2'b00: begin
 								// pre-read phase
-									if (sector_size_code < 2) sd_card_read <= 1;
+									if (fd_sector_size_code < 2) sd_card_read <= 1;
 									data_transfer_state <= 2'b10;
 								end
 							2'b10: begin
@@ -718,13 +729,13 @@ reg        s_odd; //odd sector
 reg  [9:0] fifo_sdptr;
 
 always @(*) begin
-	if (sector_size_code == 3)
+	if (fd_sector_size_code == 3)
 		fifo_sdptr = { s_odd, sd_buff_addr };
 	else
 		fifo_sdptr = { 1'b0, sd_buff_addr };
 
-	if (sector_size_code == 1)
-		fifo_cpuptr_adj = { 1'b0, (fd_spt[0] & (track[0] ^ !floppy_side)) ^ sector[0], fifo_cpuptr[7:0] };
+	if (fd_sector_size_code == 1)
+		fifo_cpuptr_adj = { 1'b0, (fd_spt[0] & (track[0] ^ !floppy_side)) ^ sector[0] ^ fd_sector_base, fifo_cpuptr[7:0] };
 	else
 		fifo_cpuptr_adj = fifo_cpuptr[9:0];
 end
@@ -779,7 +790,7 @@ always @(posedge clkcpu) begin
 
 	SD_READ:
 	if (sd_ackD & ~sd_ack) begin
-		if (s_odd || sector_size_code != 3) begin
+		if (s_odd || fd_sector_size_code != 3) begin
 			sd_state <= SD_IDLE;
 		end else begin
 			s_odd <= 1;
@@ -789,7 +800,7 @@ always @(posedge clkcpu) begin
 
 	SD_WRITE:
 	if (sd_ackD & ~sd_ack) begin
-		if (s_odd || sector_size_code != 3) begin
+		if (s_odd || fd_sector_size_code != 3) begin
 			sd_state <= SD_IDLE;
 		end else begin
 			s_odd <= 1;
@@ -858,7 +869,7 @@ always @(posedge clkcpu) begin
 
 		// read/write sector has SECTOR_SIZE data bytes
 		if(cmd[7:6] == 2'b10)
-			data_transfer_cnt <= sector_size + 1'd1;
+			data_transfer_cnt <= fd_sector_size + 1'd1;
 
 		// write sector asserts drq earlier to fill up the data register in time
 		if(cmd[7:5] == 3'b101) drq_set <= !data_in_valid;
@@ -882,19 +893,19 @@ always @(posedge clkcpu) begin
 						7: begin data_out <= fd_track; crc_en <= 1; end
 						6: begin data_out <= { 7'b0000000, (INVERT_HEAD_RA != 0) ^ floppy_side }; crc_en <= 1; end
 						5: begin data_out <= fd_sector; crc_en <= 1; end
-						4: begin data_out <= sector_size_code[1:0]; crc_en <= 1; end // TODO: sec size 0=128, 1=256, 2=512, 3=1024
+						4: begin data_out <= fd_sector_size_code[1:0]; crc_en <= 1; end // TODO: sec size 0=128, 1=256, 2=512, 3=1024
 						3: data_out <= crcval[15:8];
 						2: data_out <= crcval[7:0];
 					endcase // case (data_read_cnt)
 				end
 
 				// read sector
-				if(cmd[7:5] == 3'b100 && fifo_cpuptr != sector_size) begin
+				if(cmd[7:5] == 3'b100 && fifo_cpuptr != fd_sector_size) begin
 					data_out <= fifo_q;
 					fifo_cpuptr <= fifo_cpuptr + 1'd1;
 				end
 				// write sector
-				if(cmd[7:5] == 3'b101 && fifo_cpuptr != sector_size) begin
+				if(cmd[7:5] == 3'b101 && fifo_cpuptr != fd_sector_size) begin
 					data_in_strobe <= 1;
 					data_in_valid <= 0;
 				end
@@ -915,8 +926,8 @@ wire [7:0] status = { (MODEL == 1 || MODEL == 3) ? !floppy_ready : motor_on,
 		      cmd_type_1?motor_spin_up_done:1'b0,  // data mark
 		      RNF,                                 // seek error/record not found
 		      1'b0,                                // crc error
-		      cmd_type_1?fd_track0:data_lost,      // track0/data lost
-		      cmd_type_1?~fd_index:drq,            // index mark/drq
+		      (cmd_type_1 | cmd_type_4)?fd_track0:data_lost, // track0/data lost
+		      (cmd_type_1 | cmd_type_4)?~fd_index:drq,       // index mark/drq
 		      busy } /* synthesis keep */;
 
 reg [7:0] track /* verilator public */;

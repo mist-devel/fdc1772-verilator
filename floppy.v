@@ -28,7 +28,7 @@ module floppy (
 	input        step_out,
 
 	input        inserted,
-	input [10:0] sector_len,
+	input  [1:0] sector_size_code,
 	input        sector_base,    // number of first sector on track (archie 0, dos 1)
 	input  [5:0] spt,            // sectors/track
 	input  [9:0] sector_gap_len, // gap len/sector
@@ -36,7 +36,7 @@ module floppy (
 	input        ed,
 	input        fm,
 
-	output 	    dclk_en,      // data clock enable
+	output 	     dclk_en,      // data clock enable
 	output [6:0] track,        // number of track under head
 	output [5:0] sector,       // number of sector under head, 0 = no sector
 	output       sector_hdr,   // valid sector header under head
@@ -95,7 +95,7 @@ reg [18:0] index_pulse_cnt;
 always @(posedge clk) if(clk8m_en) begin
 	if(!inserted) begin
 		index <= 1'b1;
-		index_pulse_cnt <= INDEX_PULSE_CYCLES-1;
+		index_pulse_cnt <= INDEX_PULSE_CYCLES-1'd1;
 	end else if(index_pulse_start && (index_pulse_cnt == INDEX_PULSE_CYCLES-1)) begin
 		index <= 1'b0;
 		index_pulse_cnt <= 19'd0;
@@ -179,7 +179,7 @@ always @(posedge clk) begin
 	   
 				SECTOR_STATE_HDR: begin
 					sec_state <= SECTOR_STATE_DATA;
-					sec_byte_cnt <= sector_len[9:0]-1'd1;
+					sec_byte_cnt <= (10'd128 << sector_size_code) - 1'd1;
 				end
 	   
 				SECTOR_STATE_DATA: begin
