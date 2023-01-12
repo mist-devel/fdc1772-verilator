@@ -91,7 +91,7 @@ assign ready = inserted && select && (rate == DISK_RATE);
 // Index pulse generation. Pulse starts with the begin of index_pulse_start
 // and lasts INDEX_PULSE_CYCLES system clock cycles
 localparam INDEX_PULSE_CYCLES = INDEX_PULSE_LEN * CLK_EN;
-reg [18:0] index_pulse_cnt;
+reg [19:0] index_pulse_cnt;
 always @(posedge clk) if(clk8m_en) begin
 	if(!inserted) begin
 		index <= 1'b1;

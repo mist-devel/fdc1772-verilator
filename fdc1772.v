@@ -364,7 +364,7 @@ localparam STEP_PULSE_CLKS = STEP_PULSE_LEN * CLK_EN;
 reg [15:0] step_pulse_cnt;
 
 // the step rate is only valid for command type I
-wire [15:0] step_rate_clk = 
+wire [19:0] step_rate_clk = 
            (cmd[1:0]==2'b00)               ? (16'd6 *CLK_EN-1'd1):   //  6ms
            (cmd[1:0]==2'b01)               ? (16'd12*CLK_EN-1'd1):   // 12ms
            (MODEL == 2 && cmd[1:0]==2'b10) ? (16'd2 *CLK_EN-1'd1):   //  2ms
@@ -372,7 +372,7 @@ wire [15:0] step_rate_clk =
            (MODEL == 2)                    ? (16'd3 *CLK_EN-1'd1):   //  3ms
                                              (16'd30*CLK_EN-1'd1);   // 30ms
 
-reg [15:0] step_rate_cnt;
+reg [19:0] step_rate_cnt;
 reg [23:0] delay_cnt;
 
 assign floppy_step = step_in | step_out;
