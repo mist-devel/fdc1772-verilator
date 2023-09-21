@@ -82,7 +82,7 @@ wire [31:0] DISK_RATE = fm ? RATESD : ed ? RATEED : hd ? RATEHD : RATEDD;
 wire [31:0] DISK_BPT  = fm ? BPTSD : ed ? BPTED : hd ? BPTHD : BPTDD;
 
 // report disk ready if it spins at full speed
-assign ready = inserted && select && (rate == DISK_RATE);
+assign ready = select && (rate == DISK_RATE);
 
 // ================================================================
 // ========================= INDEX PULSE ==========================
@@ -93,10 +93,7 @@ assign ready = inserted && select && (rate == DISK_RATE);
 localparam INDEX_PULSE_CYCLES = INDEX_PULSE_LEN * CLK_EN;
 reg [19:0] index_pulse_cnt;
 always @(posedge clk) if(clk8m_en) begin
-	if(!inserted) begin
-		index <= 1'b1;
-		index_pulse_cnt <= INDEX_PULSE_CYCLES-1'd1;
-	end else if(index_pulse_start && (index_pulse_cnt == INDEX_PULSE_CYCLES-1)) begin
+	if(index_pulse_start && (index_pulse_cnt == INDEX_PULSE_CYCLES-1)) begin
 		index <= 1'b0;
 		index_pulse_cnt <= 19'd0;
 	end else if(index_pulse_cnt == INDEX_PULSE_CYCLES-1)
@@ -161,10 +158,7 @@ reg [9:0] sec_byte_cnt;  // counting bytes within sectors
 reg [5:0] current_sector = 6'd1;
   
 always @(posedge clk) begin
-	if (!inserted) begin
-		sec_state <= SECTOR_STATE_GAP;     // track starts with gap
-		current_sector <= start_sector;    // track starts with sector 1
-	end else if (byte_clk_en) begin
+	if (byte_clk_en) begin
 		if(index_pulse_start) begin
 			sec_byte_cnt <= sector_gap_len-1'd1;
 			sec_state <= SECTOR_STATE_GAP;     // track starts with gap
@@ -210,10 +204,7 @@ end
 reg [14:0] byte_cnt;
 reg 	   index_pulse_start;
 always @(posedge clk) begin
-	if (!inserted) begin
-		index_pulse_start <= 1'b0;
-		byte_cnt <= 0;
-	end else if (byte_clk_en) begin
+	if (byte_clk_en) begin
 		index_pulse_start <= 1'b0;
 
 		if(byte_cnt == (DISK_BPT - 1'd1)) begin
