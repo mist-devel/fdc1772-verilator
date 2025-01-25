@@ -68,6 +68,7 @@ localparam IMG_BBC         = 2; // SSD, DSD formats
 localparam IMG_TI99        = 3; // V9T9 format
 localparam IMG_BETA        = 4; // Beta Disk Interface (with TR-DOS)
 localparam IMG_PLUSD_IMG   = 5; // PlusD, non-track interleaved
+localparam IMG_COCO        = 6; // Color Computer
 
 localparam W    = FD_NUM - 1;
 localparam WIDX = $clog2(FD_NUM);
@@ -146,12 +147,17 @@ always @(*) begin
 			default : image_gap_len = 10'd2;
 		endcase;
 	end
-	IMG_BBC, IMG_TI99, IMG_BETA: begin
-		// 256 bytes/sector single density (BBC SSD/DSD, TI99/4A, BETA Disk Interface)
+	IMG_BBC, IMG_TI99, IMG_BETA, IMG_COCO: begin
+		// 256 bytes/sector single density (BBC SSD/DSD, TI99/4A)
+		//                  double density (BETA Disk Interface, Color Computer)
 		image_sector_size_code = 2'd1;
 		image_sector_base = 0;
 		image_fm = 1;
-		if (img_type == IMG_BBC) begin
+		if (img_type == IMG_COCO) begin
+			image_spt = 18;
+			image_sector_base = 1;
+			image_fm = 0;
+		end else if (img_type == IMG_BBC) begin
 			image_spt = 10;
 		end else if (img_type == IMG_TI99) begin
 			image_spt = 9;
@@ -185,7 +191,8 @@ always @(*) begin
 	IMG_PLUSD_IMG: sd_lba = (floppy_side ? 16'd0 : 16'd800) + fd_spt*track[6:0] + sector[5:0] - 1'd1;
 	IMG_BBC:       sd_lba = (((fd_spt*track[6:0]) << fd_doubleside) + (floppy_side ? 5'd0 : fd_spt) + sector[5:0]) >> 1;
 	IMG_TI99:      sd_lba = (fd_spt*(floppy_side ? track[5:0] : 79-track[5:0]) + sector[5:0]) >> 1;
-	IMG_BETA:      sd_lba = (((fd_spt*track[6:0]) << fd_doubleside) + (floppy_side ? 5'd0 : fd_spt) + sector[5:0] - 1'd1) >> 1;
+	IMG_BETA,
+	IMG_COCO:      sd_lba = (((fd_spt*track[6:0]) << fd_doubleside) + (floppy_side ? 5'd0 : fd_spt) + sector[5:0] - 1'd1) >> 1;
 	default:       sd_lba = 0;
 	endcase
 end
